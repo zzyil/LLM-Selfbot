@@ -10,6 +10,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import discord
+from app.utils import relationships as companion_memory
 
 # No third-party property service: discord.py-self normally fetches its client
 # properties from a selfbot-community endpoint (cordapi) before falling back to
@@ -3748,11 +3749,23 @@ def _get_random_picture(video: bool = False) -> list | None:
 _memory_tasks: set = set()
 
 
-def _spawn_memory_update(author, prompt, response):
-    """Run the post-reply memory work without blocking the reply."""
-    task = asyncio.create_task(_update_memory_after_reply(author, prompt, response))
+def _spawn_memory_update(message, prompt, response):
+    """Run fact and relationship learning without blocking the reply."""
+    task = asyncio.create_task(_update_memory_after_reply(message.author, prompt, response))
+    if companion_memory.settings().get("enabled", False):
+        relation_task = asyncio.create_task(companion_memory.learn_interaction(
+            message.author.id, companion_memory.discord_scope(message), message.id,
+            message.content or ""))
+        _memory_tasks.add(relation_task)
+        relation_task.add_done_callback(_relationship_update_done)
     _memory_tasks.add(task)
     task.add_done_callback(_memory_tasks.discard)
+
+
+def _relationship_update_done(task):
+    _memory_tasks.discard(task)
+    if not task.cancelled() and task.exception():
+        log_error("Relationship update", type(task.exception()).__name__)
 
 
 async def _update_memory_after_reply(author, prompt, response):
@@ -3782,6 +3795,8 @@ async def _update_memory_after_reply(author, prompt, response):
 
 
 async def generate_response_and_reply(message, prompt, history, image_url=None, wait_time=0, bypass_cooldown=False, bypass_typing=False):
+    if not companion_memory.channel_allowed(message.channel.id):
+        return None
     uid = message.author.id
     # Every model call made while writing this reply is tagged with whose
     # conversation it is for, so the panel can show which model is working on
@@ -3829,6 +3844,8 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
     # The persona's text read for every reply (a stat when it has not changed): written in the panel, from Telegram
     # or by a command, every account on that persona speaks with the new one from its next reply.
     enriched_instructions = load_instructions() + mood_block + memory_block + profile_block
+    enriched_instructions += companion_memory.context_block(
+        uid, companion_memory.discord_scope(message), history)
 
     # in a server the history is the whole channel, several people talking, and each of their turns is prefixed with who said it; the model has to be told that, or it reads the names as part of what was said and starts prefixing its own replies the same way
     if in_server(message.channel):
@@ -4036,7 +4053,7 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
 
             if response:
                 # memory upkeep is two more sequential Groq round trips, and neither of them changes the reply that has just been generated; awaiting them here put 1-6 seconds between the reply existing and the user seeing it, so they run alongside the send instead. the trade is that a fact learned this turn may not be in the cache yet if the same person fires another message within a second or two
-                _spawn_memory_update(message.author, prompt, response)
+                _spawn_memory_update(message, prompt, response)
 
                 if late_opener:
                     # Opener is injected via system instruction above, no prepend.
@@ -4626,6 +4643,8 @@ async def on_typing(channel, user, when):
 
 @bot.event
 async def on_message(message):
+    if not companion_memory.channel_allowed(message.channel.id):
+        return
     _log_dm(message)
     if message.author.id == bot.selfbot_id:
         if isinstance(message.channel, discord.DMChannel):

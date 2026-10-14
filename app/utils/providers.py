@@ -192,11 +192,20 @@ def _groq_models(bot: dict) -> list:
     return [m for m in raw if isinstance(m, str) and m.strip()]
 
 
+def local_only(config: dict) -> bool:
+    """An explicit inference boundary, including background jobs and fallback chains."""
+    return bool((((config or {}).get("bot") or {}).get("local") or {}).get("only", False))
+
+
 def reply_chain(config: dict) -> list:
     """Who writes replies, in the order to try them."""
     bot = (config or {}).get("bot") or {}
     models = bot.get("models") or {}
     chain = [e for e in (_entry(r) for r in (models.get("replies") or [])) if e]
+    if local_only(config):
+        local_chain = [e for e in chain if e["provider"] == "local"]
+        model = local_settings(config)["model"]
+        return local_chain or ([{"provider": "local", "model": model}] if model else [])
     if chain:
         return chain
     # Before the Models tab: the local server when it was switched on, and then
@@ -231,6 +240,8 @@ def job_chain(config: dict, name: str) -> list:
     """Who does one of the smaller jobs, in the order to try them. Groq's model for the job is
     not in it; it is what every job falls back to last (see ai._job_call)."""
     chosen = _chosen_chain(config, name)
+    if local_only(config):
+        chosen = [e for e in chosen if e["provider"] == "local"]
     return chosen or [job(config, name)]
 
 
@@ -239,6 +250,15 @@ def job(config: dict, name: str) -> dict:
     spec = JOBS[name]
     bot = (config or {}).get("bot") or {}
     chosen = _chosen_chain(config, name)
+    if local_only(config):
+        chosen = [e for e in chosen if e["provider"] == "local"]
+        if chosen:
+            return chosen[0]
+        local = local_settings(config)
+        model = local["model"] if name == "small" else local.get(spec["local_key"], "")
+        if name == "vision" and not model and local["vision"]:
+            model = local["model"]
+        return {"provider": "local", "model": model or ""}
     if chosen:
         return chosen[0]
     # The old way: a model named for this job on the local server wins, and

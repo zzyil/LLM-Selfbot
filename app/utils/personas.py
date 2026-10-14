@@ -64,6 +64,7 @@ _HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 GLOBAL_ONLY = (
     "services", "notifications", "discord.enabled", "snapchat.enabled", "bot.owner_id",
     "bot.local.base_url", "bot.local.api_key", "bot.local.autostart", "bot.local.context_length",
+    "bot.local.only",
     "bot.profile_cache", "bot.memory_summary", "bot.per_account_persona",
 )
 

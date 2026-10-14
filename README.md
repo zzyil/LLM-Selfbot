@@ -4,6 +4,9 @@
 
 # LLMSelfbot
 
+This fork adds an Agent G companion preset for LM Studio, persistent relationships,
+and chat-style adaptation. See [Agent G setup and development](AGENT_G.md).
+
 **An AI that answers your Discord and Snapchat messages, and texts like a real person while it's at it.**
 
 Give it a personality, add an account, and leave it running.<br>

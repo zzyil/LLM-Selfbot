@@ -42,6 +42,8 @@ bot:
   # Set it up under Settings, Local AI, which finds a running server for you.
   local:
     enabled: false
+    # Agent G: restrict every inference chain to local models, including utility fallback.
+    only: false
     base_url: "http://127.0.0.1:11434/v1"
     model: ""
     api_key: "local"      # most servers ignore it but reject an empty one
@@ -54,6 +56,12 @@ bot:
     stt_model: ""         # hears voice messages  (whisper-1, faster-whisper, ...)
     tts_model: ""         # speaks               (kokoro, tts-1, ...)
     tts_voice: ""         # voice names are per-engine (af_sky, alloy, ...)
+
+  # Agent G companion mode. Opt in via scripts/setup_agent_g.py before first launch.
+  # No channels are observed/answered when this is enabled with an empty list.
+  companion:
+    enabled: false
+    allowed_channel_ids: []
 
   # The summary card on the Memory page: what you and each person have been
   # talking about, written from their last few messages when you open them.

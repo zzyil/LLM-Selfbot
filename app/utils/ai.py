@@ -631,6 +631,8 @@ async def _job_call_inner(name: str, call, groq_call):
     tried_groq = set()
     from app.utils import usage
     for i, entry in enumerate(chain):
+        if not entry.get("model"):
+            continue
         # Would not load a moment ago (see _wont_load_now): straight on to the next.
         skipped = _left_alone(entry)
         if skipped is not None:
@@ -656,6 +658,10 @@ async def _job_call_inner(name: str, call, groq_call):
             if entry["provider"] != "groq":
                 apihealth.record("rate_limit" if _is_rate_limit(e) else "error",
                                  f"{providers.label(entry)}: {e}", model=entry["model"])
+    if providers.local_only(config):
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("No local model is configured for this job; local-only inference is enabled.")
     # Everything picked failed or could not be asked: Groq's own model for the job, last.
     fallback = providers.groq_fallback(config, name)["model"]
     if _groq_clients and fallback not in tried_groq:

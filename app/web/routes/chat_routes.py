@@ -928,7 +928,9 @@ def memory_get(request: Request, uid: str, persona: str = ""):
     from app.utils.memory import get_memory, get_persona
     pid = _memory_persona(persona)
     key = int(uid) if uid.isdigit() else uid
-    return {"facts": get_memory(key, persona=pid), "persona": get_persona(key, persona=pid)}
+    from app.utils.relationships import list_relationships
+    return {"facts": get_memory(key, persona=pid), "persona": get_persona(key, persona=pid),
+            "relationships": list_relationships(key, persona=pid)}
 
 
 @router.put("/api/memory/{uid}")

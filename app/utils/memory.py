@@ -56,6 +56,8 @@ def clear_memory(user_id: int, persona=None):
     ensure_persona_schema()
     with _connect() as conn:
         conn.execute("DELETE FROM user_memory WHERE persona = ? AND user_id = ?", (persona_key(persona), user_id))
+    from app.utils.relationships import clear_relationships
+    clear_relationships(user_id, persona)
 
 
 def copy_persona_memory(src: str, dst: str):

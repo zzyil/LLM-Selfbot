@@ -62,7 +62,12 @@
     learned_at?: number;
     learned?: string;
   };
-  type MemDetail = { facts: Record<string, string>; persona: string | null };
+  type Relationship = {
+    scope: string; relationship: string; affinity: number; interactions: number;
+  };
+  type MemDetail = {
+    facts: Record<string, string>; persona: string | null; relationships?: Relationship[];
+  };
   /** The last thing it learned about anyone. */
   type Latest = { user_id: string; name: string; key: string; value: string; at: number };
 
@@ -479,6 +484,21 @@
         <PersonSummary uid={selected} name={current.display_name || current.username || ""} persona={who} />
 
         {#if detail}
+          {#if detail.relationships?.length}
+            <section class="mm-facts-card glass">
+              <header class="mm-head"><h3>Relationships</h3></header>
+              <p>Its attitude toward this person in each conversation.</p>
+              <div class="mm-fact-grid">
+                {#each detail.relationships as relation (relation.scope)}
+                  <div class="mm-fact">
+                    <b>{relation.relationship.replaceAll("_", " ")}</b>
+                    <p>{relation.interactions} analyzed interactions</p>
+                    <small>{relation.scope}</small>
+                  </div>
+                {/each}
+              </div>
+            </section>
+          {/if}
           <section class="mm-facts-card glass">
             <header class="mm-head">
               <h3>Remembered facts</h3>
