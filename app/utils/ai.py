@@ -873,9 +873,24 @@ def _show_thinking(response):
         log_thinking(thought, last_reply_model)
 
 
+async def _character_reaction(prompt, instructions, history=None):
+    plan = conversation.reaction_plan(prompt, history)
+    if plan is None:
+        return None
+    try:
+        response = await _create_completion(
+            conversation.reaction_messages(instructions, plan), max_tokens=_reply_token_cap())
+        text = re.sub(r"</?blockquote\b[^>]*>", "", _answer_of(response)).strip()
+        if conversation.valid_reaction(text, plan):
+            return text
+    except (Exception, SystemExit):  # noqa: BLE001 - keep the character reaction when inference is unavailable
+        return conversation.bait_reply(prompt, history=history)
+    return conversation.bait_reply(prompt, history=history)
+
+
 async def generate_response(prompt, instructions, history=None):
     """Completion request returning the response text; if history is passed the caller already appended the user turn as the last entry and prompt is NOT added again, otherwise prompt is the sole user message."""
-    reaction = conversation.bait_reply(prompt)
+    reaction = await _character_reaction(prompt, instructions, history)
     if reaction is not None:
         return reaction
     if not _initialised:
@@ -883,7 +898,7 @@ async def generate_response(prompt, instructions, history=None):
     try:
         messages = [{"role": "system", "content": instructions}]
         if history:
-            messages += history
+            messages += conversation.model_history(history)
         else:
             messages.append({"role": "user", "content": prompt})
 
@@ -1044,7 +1059,7 @@ async def _prepare_image_url(image_url: str) -> str:
 
 
 async def generate_response_image(prompt, instructions, image_url, history=None):
-    reaction = conversation.bait_reply(prompt)
+    reaction = await _character_reaction(prompt, instructions, history)
     if reaction is not None:
         return reaction
     if not _initialised:

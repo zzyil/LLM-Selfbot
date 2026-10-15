@@ -65,7 +65,7 @@ bot:
     max_bytes: 32768  # UTF-8 input budget, including the persona text
   character_chat:
     react_to_prompt_bait: false
-    bait_replies: ["wtf???", "bro what???", "what are you on about"]
+    bait_replies: []  # optional custom fallbacks; empty uses varied, escalating character reactions
 
   # Agent G companion mode. Opt in via scripts/setup_agent_g.py before first launch.
   # With follow_joined_servers off, empty channel and server lists answer nothing.

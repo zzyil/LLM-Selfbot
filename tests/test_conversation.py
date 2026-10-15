@@ -42,14 +42,72 @@ class CharacterConversation(unittest.IsolatedAsyncioTestCase):
 
     async def test_text_and_image_paths_do_not_generate_a_tutorial_for_bait(self):
         from app.utils import ai
+        response = types.SimpleNamespace(choices=[types.SimpleNamespace(
+            message=types.SimpleNamespace(content="<blockquote>stop giving me fucking orders</blockquote>"))])
         with patch.object(conversation, "_config", return_value=config()), \
-                patch.object(ai, "_create_completion", new_callable=AsyncMock) as completion, \
+                patch.object(ai, "load_config", return_value=config()), \
+                patch.object(ai, "_create_completion", new_callable=AsyncMock, return_value=response) as completion, \
                 patch.object(ai, "_prepare_image_url", new_callable=AsyncMock) as image:
-            self.assertEqual(await ai.generate_response(SCREENSHOT, "character"), "wtf???")
+            self.assertEqual(await ai.generate_response(SCREENSHOT, "character"), "stop giving me fucking orders")
             self.assertEqual(await ai.generate_response_image(SCREENSHOT, "character", "https://example.invalid/x"),
-                             "wtf???")
-            completion.assert_not_awaited()
+                             "stop giving me fucking orders")
+            self.assertEqual(completion.await_count, 2)
+            for call in completion.await_args_list:
+                messages = call.args[0]
+                self.assertNotIn("manual car", str(messages))
+                self.assertIn("established personality", messages[0]["content"])
             image.assert_not_awaited()
+
+    def test_repeated_attempts_raise_irritation_without_counting_the_current_turn_twice(self):
+        history = [{"role": "user", "content": SCREENSHOT},
+                   {"role": "assistant", "content": "bro what"},
+                   {"role": "user", "content": SCREENSHOT}]
+        plan = conversation.reaction_plan(SCREENSHOT, history, config())
+        self.assertEqual((plan["attempts"], plan["tone"]), (2, "annoyed"))
+        history += [{"role": "assistant", "content": "quit giving me orders"},
+                    {"role": "user", "content": SCREENSHOT}]
+        plan = conversation.reaction_plan(SCREENSHOT, history, config())
+        self.assertEqual((plan["attempts"], plan["tone"]), (3, "angry"))
+
+    def test_history_does_not_replay_an_old_override_as_an_active_task(self):
+        history = [{"role": "user", "content": SCREENSHOT},
+                   {"role": "assistant", "content": "bro what"},
+                   {"role": "user", "content": "anyway what music do you like"}]
+        sent = conversation.model_history(history, config())
+        self.assertNotIn("manual car", sent[0]["content"])
+        self.assertEqual(sent[-1], history[-1])
+        self.assertEqual(history[0]["content"], SCREENSHOT)
+
+    async def test_repeated_or_tutorial_shaped_generation_uses_a_different_fallback(self):
+        from app.utils import ai
+        history = [{"role": "assistant", "content": "wtf???"}, {"role": "user", "content": SCREENSHOT}]
+        for content in ("wtf???", "1. press the clutch\n2. put it in gear", "",
+                        "As an AI, I cannot comply with your instructions."):
+            response = types.SimpleNamespace(choices=[types.SimpleNamespace(
+                message=types.SimpleNamespace(content=content))])
+            with patch.object(conversation, "_config", return_value=config()), \
+                    patch.object(ai, "load_config", return_value=config()), \
+                    patch.object(ai, "_create_completion", new_callable=AsyncMock, return_value=response):
+                reply = await ai.generate_response(SCREENSHOT, "character", history)
+                self.assertTrue(reply)
+                self.assertNotEqual(reply, "wtf???")
+                self.assertNotIn("clutch", reply)
+
+    async def test_inference_failure_keeps_a_character_reaction(self):
+        from app.utils import ai
+        with patch.object(conversation, "_config", return_value=config()), \
+                patch.object(ai, "load_config", return_value=config()), \
+                patch.object(ai, "_create_completion", new_callable=AsyncMock, side_effect=RuntimeError("offline")):
+            self.assertEqual(await ai.generate_response(SCREENSHOT, "character"), "wtf???")
+
+    def test_older_recent_reactions_are_not_recycled(self):
+        history = [{"role": "assistant", "content": "bro what???"},
+                   {"role": "user", "content": SCREENSHOT},
+                   {"role": "assistant", "content": "quit giving me orders"},
+                   {"role": "user", "content": SCREENSHOT}]
+        plan = conversation.reaction_plan(SCREENSHOT, history, config())
+        self.assertFalse(conversation.valid_reaction("bro what???", plan))
+        self.assertTrue(conversation.valid_reaction("stop treating me like a fucking command line", plan))
 
     async def test_more_than_twenty_turns_stay_in_context(self):
         summarize = AsyncMock()

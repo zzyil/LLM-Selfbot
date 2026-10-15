@@ -93,11 +93,19 @@ features such as updates; this option controls inference providers.
 ## Character reactions and context
 
 For a character that reacts socially to explicit requests to ignore its persona,
-enable `bot.character_chat.react_to_prompt_bait`. Its `bait_replies` list supplies
-short reactions such as "wtf???" for direct instruction overrides or requests to
-reply out of character, without sending those requests to the model. This narrow
-rule is optional and does not classify every possible prompt injection. Quoted
-examples and reported speech can still be discussed normally.
+enable `bot.character_chat.react_to_prompt_bait`. The model writes a short reaction
+in the selected persona's voice, with irritation increasing when the recent
+conversation contains repeated attempts. It receives a neutral description of
+the behavior rather than the attack's requested task. Earlier role-control turns
+are also replaced with a neutral note in model context; the raw stored history
+remains intact. Repeated, empty or tutorial-shaped model responses use a varied
+fallback that avoids repeating the previous reply. `bait_replies` can supply
+custom fallbacks; an empty list uses built-in reactions for each intensity.
+
+This narrow rule is optional and does not classify every possible prompt
+injection. Quoted examples, reported speech and ordinary questions remain
+available for conversation. Staying in character does not require falsely denying
+automation when directly asked.
 
 `bot.history` controls the actual chat transcript, separately from Discord's
 `bot.cache.max_messages`. For a local model with enough room, for example:

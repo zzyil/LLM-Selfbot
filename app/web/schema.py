@@ -165,7 +165,7 @@ CONFIG_SCHEMA = [
     {"key": "bot.character_chat.react_to_prompt_bait", "type": "bool",
      "label": "React to attempts to override the character", "section": "Conversation", "default": False},
     {"key": "bot.character_chat.bait_replies", "type": "json",
-     "label": "Prompt bait reactions", "section": "Conversation", "default": ["wtf???"]},
+     "label": "Prompt bait fallback reactions", "section": "Conversation", "default": []},
     {"key": "bot.history.max_messages", "type": "int", "label": "Conversation context messages",
      "section": "Conversation", "min": 8, "max": 1000, "default": 30},
     {"key": "bot.history.summarize_after", "type": "int", "label": "Compress history after",
