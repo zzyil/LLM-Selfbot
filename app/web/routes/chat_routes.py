@@ -1119,3 +1119,38 @@ async def memory_summary(request: Request, uid: str, force: bool = False, cached
     if stored:
         return _summary_out(stored, cached=True, stale=True, reason=reason)
     return {"ok": False, "enabled": True, "reason": reason}
+
+
+# Community vocabulary is separate from facts about people.
+def _lingo_ids(guild_id, channel_id):
+    if not str(guild_id).isdigit() or not str(channel_id).isdigit():
+        raise HTTPException(status_code=400, detail="Server and channel IDs must be numeric strings.")
+    return str(guild_id), str(channel_id)
+
+
+@router.get("/api/lingo")
+def lingo_list(request: Request, guild_id: str, channel_id: str | None = None, persona: str = ""):
+    from app.utils import lingo
+    guild, _ = _lingo_ids(guild_id, channel_id or "0")
+    return {"guild_id": guild, "entries": lingo.glossary(guild, channel_id, _memory_persona(persona))}
+
+
+@router.put("/api/lingo/{guild_id}")
+async def lingo_put(request: Request, guild_id: str, persona: str = ""):
+    from app.utils import lingo
+    body = await request.json()
+    guild, channel = _lingo_ids(guild_id, body.get("scope_channel", "0"))
+    try:
+        await asyncio.to_thread(lingo.set_definition, guild, body.get("term"), body.get("meaning"),
+                               channel, _memory_persona(persona))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"ok": True}
+
+
+@router.delete("/api/lingo/{guild_id}/{term}")
+async def lingo_delete(request: Request, guild_id: str, term: str, channel_id: str = "0", persona: str = ""):
+    from app.utils import lingo
+    guild, channel = _lingo_ids(guild_id, channel_id)
+    await asyncio.to_thread(lingo.remove, guild, term, channel, _memory_persona(persona))
+    return {"ok": True}

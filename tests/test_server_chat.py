@@ -115,7 +115,7 @@ class ServerConversations(unittest.IsolatedAsyncioTestCase):
             paused=False, paused_users=set(), allow_dm=False, allow_gc=False, allow_server=True,
             active_conversations={}, hold_conversation=True,
         )
-        seen = []
+        seen, vocabulary_seen = [], []
         namespace = {
             "discord": discord, "bot": bot, "companion_memory": types.SimpleNamespace(
                 message_allowed=lambda m: True, settings=lambda: {"enabled": True}),
@@ -126,6 +126,7 @@ class ServerConversations(unittest.IsolatedAsyncioTestCase):
             "time": types.SimpleNamespace(time=lambda: 1000), "CONVERSATION_TIMEOUT": 60,
             "in_server": lambda ch: isinstance(ch, text_channel),
             "_server_can_reply": lambda m: True, "_get_server_chat": lambda: self.chat,
+            "_observe_server_lingo": lambda m: vocabulary_seen.append(m.id),
             "record_user_message": lambda uid, name, account: seen.append(uid), "ACCOUNT_INDEX": 1,
         }
         exec(compile(ast.Module(body=callbacks, type_ignores=[]), "discord-handler", "exec"),  # noqa: S102
@@ -138,6 +139,7 @@ class ServerConversations(unittest.IsolatedAsyncioTestCase):
             await namespace["on_message"](target)
         await self.settle()
         self.assertEqual(seen, [2, 1])
+        self.assertEqual(vocabulary_seen, [1, 2])
         self.assertEqual(len(self.sent), 1)
         self.assertIn("the server topic", json_text(self.sent[0][1]))
         self.assertTrue(self.sent[0][2])

@@ -300,6 +300,9 @@ def delete_persona_rows(persona: str) -> None:
         _ensure_summary_table(conn)
         for table in ("pictures", "user_memory", "user_summaries"):
             conn.execute(f"DELETE FROM {table} WHERE persona = ?", (persona,))
+        for table in ("server_lingo", "server_lingo_evidence"):
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+                conn.execute(f"DELETE FROM {table} WHERE persona = ?", (persona,))
 
 
 def copy_persona_pictures(src: str, dst: str) -> None:

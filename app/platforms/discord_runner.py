@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 import discord
 from app.utils import relationships as companion_memory
+from app.utils import lingo
 from app.utils import conversation
 
 # No third-party property service: discord.py-self normally fetches its client
@@ -3860,6 +3861,7 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
     enriched_instructions = load_instructions() + mood_block + memory_block + profile_block
     enriched_instructions += companion_memory.context_block(
         uid, companion_memory.discord_scope(message), history)
+    enriched_instructions += lingo.context_block(message, prompt, history)
 
     # in a server the history is the whole channel, several people talking, and each of their turns is prefixed with who said it; the model has to be told that, or it reads the names as part of what was said and starts prefixing its own replies the same way
     if in_server(message.channel):
@@ -4591,6 +4593,10 @@ def _cache_author(user) -> None:
 async def on_raw_message_delete(payload):
     """A message deleted on Discord: kept in the chat log, and marked, so the Chats tab shows it with a bin."""
     if payload.guild_id is not None:
+        learner = getattr(bot, "server_lingo", None)
+        if learner is not None:
+            learner.invalidate(payload.channel_id, payload.message_id)
+        await asyncio.to_thread(lingo.forget_source, payload.message_id)
         if _server_chat is not None:
             _server_chat.delete(payload.channel_id, payload.message_id)
         return
@@ -4607,6 +4613,11 @@ async def on_raw_message_edit(payload):
     """A DM message edited: the new words, in the log and in an open chat view."""
     if payload.guild_id is not None:
         data = getattr(payload, "data", None) or {}
+        if "content" in data:
+            learner = getattr(bot, "server_lingo", None)
+            if learner is not None:
+                learner.invalidate(payload.channel_id, payload.message_id, data.get("content") or "")
+            await asyncio.to_thread(lingo.forget_source, payload.message_id)
         if _server_chat is not None and "content" in data:
             _server_chat.edit(payload.channel_id, payload.message_id, data.get("content") or "")
         return
@@ -4677,6 +4688,23 @@ def _get_server_chat():
             report=lambda exc: log_error("Server companion", type(exc).__name__))
         bot.server_companion = _server_chat
     return _server_chat
+
+
+def _lingo_can_learn(message):
+    return (getattr(message, "guild", None) is not None and bot.allow_server and not bot.paused
+            and message.author.id != bot.selfbot_id and not getattr(message.author, "bot", False)
+            and message.author.id not in bot.paused_users and message.author.id not in bot.ignore_users
+            and companion_memory.message_allowed(message))
+
+
+def _observe_server_lingo(message):
+    if not lingo.settings()["enabled"] or not _lingo_can_learn(message):
+        return
+    learner = getattr(bot, "server_lingo", None)
+    if learner is None:
+        learner = bot.server_lingo = lingo.Learner(
+            can_learn=_lingo_can_learn, report=lambda exc: log_error("Server vocabulary", type(exc).__name__))
+    learner.observe(message)
 
 
 def _server_can_reply(message):
@@ -4888,6 +4916,9 @@ async def on_message(message):
     if message.content.startswith(PREFIX) and message.author.id == OWNER_ID:
         await bot.process_commands(message)
         return
+
+    if in_server(message.channel):
+        _observe_server_lingo(message)
 
     if in_server(message.channel) and companion_memory.settings().get("enabled", False):
         if _server_can_reply(message):

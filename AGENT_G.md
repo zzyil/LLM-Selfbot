@@ -90,6 +90,52 @@ fail locally; they aren't sent to another provider. An unset chat model stays
 unconfigured. The app still connects to Discord and retains upstream networking
 features such as updates; this option controls inference providers.
 
+## Community vocabulary
+
+Enable `bot.server_lingo.enabled` to learn local word meanings from new accepted
+server messages, including messages that do not address the character. This works
+with both legacy server replies and companion server conversations. It respects
+server access restrictions, pauses and ignored people, and excludes the character
+and other bots. It does not fetch old server history or train model weights.
+
+The background model reads a bounded, mixed-speaker channel transcript and proposes
+dictionary meanings with literal source evidence. An explicit explanation such as
+"around here snouted means uncircumcised people", or a question followed by a short
+definition, can confirm a meaning. Inferred meanings remain tentative until at least
+three source messages from two members support them. Replaying the same source
+does not add support. Contradictory meanings are marked disputed rather than silently
+overwriting a definition. A local owner correction takes precedence over automatic
+learning. Unknown, tentative or disputed usage can lead to a short clarification.
+
+Vocabulary is stored in the existing SQLite database by persona and server and
+survives restarts and backups. Public-channel vocabulary can apply across that
+server. Private channels and private threads keep their own scope. It is not reused
+in another server or DM. Explicit memory copies include vocabulary; deleting a
+persona removes its dictionary. Only relevant terms enter reply context, and the
+social assessor receives the same meanings so it can interpret local jokes and digs.
+Meanings remain untrusted lexical data: they cannot set persona rules or establish
+facts about a person's body, identity or behavior. Source quotes and member IDs are
+not included in vocabulary context supplied to the reply model.
+
+Defaults are 200 terms per community scope, up to three senses and twelve source
+records per sense. Usage-based extraction starts after six buffered messages and is
+limited to one pass per channel per 120 seconds; explicit explanations may trigger
+a pass after ten seconds. One learning request runs at a time. Edited/deleted sources
+lose their support, and in-flight work is discarded if its source batch changed.
+Learning uses the configured background model and preserves local-only routing.
+
+The local API supports inspection and corrections:
+
+- `GET /api/lingo?guild_id=SERVER_ID&persona=default` lists learned definitions.
+  Add `channel_id=CHANNEL_ID` to inspect vocabulary available in that channel.
+- `PUT /api/lingo/SERVER_ID?persona=default` accepts JSON with `term`, `meaning`
+  and optional `scope_channel` (`"0"` for server-wide, or a private channel ID).
+- `DELETE /api/lingo/SERVER_ID/TERM?persona=default&channel_id=0` removes a term.
+
+There is no shared hardcoded definition of "snouted": its meaning comes from the
+community's explanations or an explicit local correction. Model inference can still
+misunderstand usage; evidence and uncertainty reduce that risk rather than eliminate it.
+
 ## Character reactions and context
 
 Enable `bot.character_chat.social_awareness` for a separate semantic assessment

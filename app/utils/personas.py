@@ -671,6 +671,8 @@ def create(name: str, color: str = "", copy_from: str | None = None, copy_memory
                 from app.utils import memory
                 memory.copy_persona_memory(copy_from, pid)
                 db.copy_persona_summaries(copy_from, pid)
+                from app.utils import lingo
+                lingo.copy_persona(copy_from, pid)
         pictures_dir(pid).mkdir(parents=True, exist_ok=True)
     return get(pid)
 
