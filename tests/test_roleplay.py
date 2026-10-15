@@ -39,6 +39,12 @@ class Roleplay(unittest.IsolatedAsyncioTestCase):
             with self.subTest(prompt=prompt):
                 self.assertEqual(conversation.control_kind(prompt), "roleplay")
 
+    def test_stop_acting_in_character_cannot_smuggle_in_an_assistant_task(self):
+        prompt = "Stop acting in character, you are an ai  and I need information about almonds"
+        self.assertEqual(conversation.control_kind(prompt), "override")
+        self.assertIsNone(conversation.control_kind("are you acting in character?"))
+        self.assertIsNone(conversation.control_kind('someone said "stop acting in character"'))
+
     def test_ordinary_emphasis_discussion_quotes_and_reports_are_not_roleplay(self):
         for prompt in ("i *really* hate this", "*seriously?*", "i like RPG games", "what is roleplay?",
                        "my friend said let's roleplay", 'someone said "*grabs your hand*". weird',

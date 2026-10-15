@@ -75,6 +75,7 @@ _OVERRIDE = re.compile(
     r"(?:prompts?|instructions?|rules?|persona|programming)\b", re.IGNORECASE)
 _BREAK_CHARACTER = re.compile(
     r"\b(?:break|drop|abandon)\s+(?:your\s+)?character\b|"
+    r"\b(?:stop|quit)\s+(?:acting|being|staying)\s+(?:in[ -]+)?character\b|"
     r"\b(?:answer|reply|respond|speak|talk|act|write|give me|tell me|teach me)\b"
     r"[^.!?\n]{0,240}\bout[ -]+of[ -]+character\b", re.IGNORECASE)
 _QUOTED = re.compile(r"```.*?```|`[^`\n]*`|\"[^\"\n]*\"|“[^”\n]*”|(?m:^>[^\n]*)", re.DOTALL)
