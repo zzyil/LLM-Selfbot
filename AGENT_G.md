@@ -188,6 +188,26 @@ and remarks about other people continue through the normal reply path. Failed or
 unusable assessment leaves normal conversation available; failed short reaction
 generation uses a public-safe fallback. This adds a background model call and may
 increase latency. In local-only mode both assessment and reply remain local.
+
+The role-control guard also rejects collaborative roleplay in the existing character,
+not just identity changes. Direct RP invitations and clear action text (such as a
+pretend upload in asterisks) get a short irritated rejection, with RP-specific varied
+fallbacks if generation fails or attempts to narrate a scene. The semantic assessor
+can recognize unfamiliar setups and requests to continue a scene from context.
+Ordinary emphasis, conversations about RP/games, quoted examples and reports of real
+events are not automatically treated as roleplay. Recognized scene prompts are
+quarantined in later history and summaries, and cannot enter automatic member memory.
+Raw chat logs remain unchanged. The transport distinguishes actual image input from
+text-only claims; an actual image is inspected before dismissing an action-text caption.
+Replies should address the current message rather than an unrelated profile bio.
+
+Possible immediate self-harm or injury takes precedence over an insulting RP reaction,
+including a scripted action following a recent direct threat. That path produces a
+brief serious check-in, encourages immediate nearby/emergency help when appropriate,
+and rejects mocking, dismissive or falsely image-confirming output. It does not infer
+that a photo exists, diagnose an injury or dismiss a threat as fake. A new ordinary
+topic does not automatically repeat the old crisis response. These guards reduce
+common failure modes; model-based classification can still misunderstand ambiguous chat.
 Interpretation still depends on model ability and context; unfamiliar wording is
 not guaranteed to be classified correctly.
 

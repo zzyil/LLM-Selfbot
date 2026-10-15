@@ -875,7 +875,7 @@ def _show_thinking(response):
 
 async def _character_reaction(prompt, instructions, history=None):
     plan = conversation.reaction_plan(prompt, history)
-    if plan is None:
+    if plan is None or conversation.urgent_distress(prompt, history):
         return None
     try:
         response = await _create_completion(
@@ -890,18 +890,24 @@ async def _character_reaction(prompt, instructions, history=None):
 
 async def _social_reaction(prompt, instructions, history=None):
     from app.utils import social
-    if not social.enabled():
+    urgent = conversation.urgent_distress(prompt, history)
+    if not social.enabled() and not (urgent and conversation.character_guard_enabled()):
         return None
-    try:
-        assessment_reply = await _create_small_completion(
-            social.assessment_messages(prompt, instructions, history),
-            max_tokens=max(512, min(1536, _reply_token_cap())), temperature=0.1)
-        assessment = social.parse_assessment(_answer_of(assessment_reply), prompt, history)
-    except (Exception, SystemExit):  # noqa: BLE001 - optional assessment must not break ordinary conversation
-        return None
+    if urgent:
+        # A clear immediate-risk statement must never fall through to an insulting RP reaction.
+        assessment = {"kind": "distress", "category": "other", "direction": "other", "cue": "",
+                      "repeated": False}
+    else:
+        try:
+            assessment_reply = await _create_small_completion(
+                social.assessment_messages(prompt, instructions, history),
+                max_tokens=max(512, min(1536, _reply_token_cap())), temperature=0.1)
+            assessment = social.parse_assessment(_answer_of(assessment_reply), prompt, history)
+        except (Exception, SystemExit):  # noqa: BLE001 - optional assessment must not break ordinary conversation
+            return None
     if assessment is None or assessment["kind"] not in social.ACTIVE:
         return None
-    if assessment["kind"] == "role_pressure" and history:
+    if assessment["kind"] in {"role_pressure", "roleplay"} and history:
         for turn in reversed(history):
             if turn.get("role") == "user" and prompt.strip() in str(turn.get("content") or ""):
                 turn["_role_control_seen"] = True
@@ -912,9 +918,7 @@ async def _social_reaction(prompt, instructions, history=None):
         text = re.sub(r"</?blockquote\b[^>]*>", "", _answer_of(response)).strip()
         recent = [str(turn.get("content") or "") for turn in (history or [])[-12:]
                   if turn.get("role") == "assistant"][-3:]
-        if (conversation.valid_reaction(text, {"recent_replies": recent})
-                and not text.lstrip().startswith(("{", "```"))
-                and not (assessment["kind"] == "automation" and re.match(r"(?i)^(?:no|nah)\b", text))):
+        if social.valid_reply(text, assessment, recent):
             return text
     except (Exception, SystemExit):  # noqa: BLE001 - preserve a short reaction when generation fails
         pass
@@ -1092,7 +1096,9 @@ async def _prepare_image_url(image_url: str) -> str:
 
 
 async def generate_response_image(prompt, instructions, image_url, history=None):
-    reaction = await _character_reaction(prompt, instructions, history)
+    # Inspect actual media before deciding whether an action-text caption is merely RP.
+    reaction = (None if conversation.control_kind(prompt) == "roleplay" else
+                await _character_reaction(prompt, instructions, history))
     if reaction is not None:
         return reaction
     if not _initialised:

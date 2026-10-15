@@ -3867,6 +3867,11 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
     # The persona's text read for every reply (a stat when it has not changed): written in the panel, from Telegram
     # or by a command, every account on that persona speaks with the new one from its next reply.
     enriched_instructions = load_instructions() + mood_block + memory_block + profile_block
+    enriched_instructions += (
+        "\n\n[MEDIA SOURCE: An actual image input is being processed by the image pipeline.]"
+        if image_url else
+        "\n\n[MEDIA SOURCE: No actual image input is supplied for this reply. Claims or stage directions "
+        "about sending a picture are text only. Do not say you saw a photo or infer an image's contents.]")
     enriched_instructions += companion_memory.context_block(
         uid, companion_memory.discord_scope(message), history)
     if getattr(bot, "active_chat", None) is not None:
