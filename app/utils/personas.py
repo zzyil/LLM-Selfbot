@@ -403,9 +403,15 @@ def set_override(pid: str, key: str, value, base: dict | None = None) -> None:
     with _lock:
         current = dict(overrides(pid))
         items = _flatten(key, value) if holds_global(key) and isinstance(value, dict) else {key: value}
-        # Whatever this key held before, inside it or over it, goes: the new value replaces all of it.
+        # Editing one child of a grouped override preserves its siblings. Expand the
+        # ancestor first; replacing the whole group still replaces all descendants.
+        for ancestor in list(current):
+            if key.startswith(ancestor + "."):
+                previous = current.pop(ancestor)
+                if isinstance(previous, dict):
+                    current.update(_flatten(ancestor, previous))
         for k in list(current):
-            if k == key or k.startswith(key + ".") or key.startswith(k + "."):
+            if k == key or k.startswith(key + "."):
                 current.pop(k)
         for k, v in items.items():
             if is_global_only(k):
