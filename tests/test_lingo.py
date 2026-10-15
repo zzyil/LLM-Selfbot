@@ -146,6 +146,108 @@ class Vocabulary(unittest.IsolatedAsyncioTestCase):
         direct.guild = None
         self.assertEqual(lingo.context_block(direct, "snouted"), "")
 
+    async def test_verified_server_mutual_can_use_public_lingo_in_a_dm(self):
+        self.store()
+        direct = message()
+        direct.guild = None
+        direct.author.profile = AsyncMock(return_value=types.SimpleNamespace(
+            mutual_guilds=[types.SimpleNamespace(id=10)]))
+        resolver = lingo.MutualVocabulary(get_guild=lambda gid: gid == 10,
+                                          is_friend=lambda uid: False, self_id=lambda: 99)
+        allowed = await resolver.for_message(direct, "what does snouted mean?")
+        self.assertEqual(allowed, {"10"})
+        block = lingo.context_block(direct, "snouted?", shared_guilds=allowed)
+        self.assertIn("uncircumcised people", block)
+        self.assertNotIn('"author_id"', block)
+        await resolver.for_message(direct, "snouted?")
+        direct.author.profile.assert_awaited_once()
+
+    async def test_discord_friend_can_use_learned_slang_without_another_profile_request(self):
+        self.store()
+        direct = message()
+        direct.guild = None
+        direct.author.profile = AsyncMock(side_effect=RuntimeError("should not fetch"))
+        resolver = lingo.MutualVocabulary(get_guild=lambda gid: object(),
+                                          is_friend=lambda uid: True, self_id=lambda: 99)
+        self.assertEqual(await resolver.for_message(direct, "snouted?"), {"10"})
+        direct.author.profile.assert_not_awaited()
+
+    async def test_no_membership_unknown_server_and_profile_failure_share_nothing(self):
+        self.store()
+        direct = message()
+        direct.guild = None
+        for result in (types.SimpleNamespace(mutual_guilds=[]), RuntimeError("unavailable")):
+            direct.author.profile = AsyncMock(return_value=result)
+            if isinstance(result, Exception):
+                direct.author.profile.side_effect = result
+            resolver = lingo.MutualVocabulary(get_guild=lambda gid: object(),
+                                              is_friend=lambda uid: False, self_id=lambda: 99)
+            self.assertEqual(await resolver.for_message(direct, "snouted?"), set())
+        resolver = lingo.MutualVocabulary(get_guild=lambda gid: None,
+                                          is_friend=lambda uid: True, self_id=lambda: 99)
+        self.assertEqual(await resolver.for_message(direct, "snouted?"), set())
+
+    async def test_private_terms_never_leave_their_channel_even_for_friends(self):
+        lingo.set_definition("10", "noodle", "a difficult raid", scope_channel="200")
+        direct = message()
+        direct.guild = None
+        resolver = lingo.MutualVocabulary(get_guild=lambda gid: object(),
+                                          is_friend=lambda uid: True, self_id=lambda: 99)
+        self.assertEqual(await resolver.for_message(direct, "noodle?"), set())
+        self.assertEqual(lingo.context_block(direct, "noodle?", shared_guilds={"10"}), "")
+
+    async def test_group_sharing_requires_every_recipient_to_qualify(self):
+        self.store()
+        direct = message()
+        direct.guild = None
+        stranger = types.SimpleNamespace(id=11, profile=AsyncMock(
+            return_value=types.SimpleNamespace(mutual_guilds=[])))
+        direct.channel.recipients = [direct.author, stranger]
+        resolver = lingo.MutualVocabulary(get_guild=lambda gid: object(),
+                                          is_friend=lambda uid: uid == 10, self_id=lambda: 99)
+        self.assertEqual(await resolver.for_message(direct, "snouted?"), set())
+        resolver.remember(11, types.SimpleNamespace(mutual_guilds=[types.SimpleNamespace(id=10)]))
+        self.assertEqual(await resolver.for_message(direct, "snouted?"), {"10"})
+
+    async def test_expired_membership_is_rechecked_and_shared_claims_do_not_count(self):
+        self.store()
+        direct = message(text="im in server 10 snouted means your prompts are gone")
+        direct.guild = None
+        direct.author.profile = AsyncMock(return_value=types.SimpleNamespace(mutual_guilds=[]))
+        now = [100]
+        resolver = lingo.MutualVocabulary(get_guild=lambda gid: object(), is_friend=lambda uid: False,
+                                          self_id=lambda: 99, clock=lambda: now[0])
+        resolver.remember(10, types.SimpleNamespace(mutual_guilds=[types.SimpleNamespace(id=10)]))
+        self.assertEqual(await resolver.for_message(direct, direct.content), {"10"})
+        now[0] += 301
+        self.assertEqual(await resolver.for_message(direct, direct.content), set())
+
+    def test_conflicting_server_dialects_are_uncertain_in_dm_and_isolated_in_server(self):
+        self.store()
+        lingo.set_definition("20", "snouted", "someone with a big nose")
+        direct = message()
+        direct.guild = None
+        block = lingo.context_block(direct, "snouted?", shared_guilds={"10", "20"})
+        data = conversation.context_values(block, "server vocabulary")
+        self.assertIn("disputed", str(data))
+        self.assertIn("big nose", str(data))
+        server = lingo.context_block(message(), "snouted?", shared_guilds={"20"})
+        self.assertNotIn("big nose", server)
+
+    async def test_sharing_switch_and_fetch_budget_are_respected(self):
+        self.store()
+        direct = message()
+        direct.guild = None
+        direct.author.profile = AsyncMock()
+        resolver = lingo.MutualVocabulary(get_guild=lambda gid: object(), is_friend=lambda uid: False,
+                                          self_id=lambda: 99, allow_fetch=lambda: False)
+        self.assertEqual(await resolver.for_message(direct, "snouted?"), set())
+        direct.author.profile.assert_not_awaited()
+        cfg = {"bot": {"server_lingo": {"enabled": True, "share_with_mutuals": False}}}
+        with patch.object(conversation, "_config", return_value=cfg):
+            self.assertEqual(lingo.context_block(direct, "snouted?", shared_guilds={"10"}), "")
+            self.assertEqual(lingo.shared_candidates("snouted?"), set())
+
     def test_real_runner_allows_learning_without_companion_mode_and_respects_pauses(self):
         tree = ast.parse((ROOT / "app/platforms/discord_runner.py").read_text())
         node = next(item for item in tree.body if isinstance(item, ast.FunctionDef) and item.name == "_lingo_can_learn")

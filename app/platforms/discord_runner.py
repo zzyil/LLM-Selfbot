@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 import discord
 from app.utils import relationships as companion_memory
-from app.utils import lingo
+from app.utils import lingo, engagement
 from app.utils import conversation
 
 # No third-party property service: discord.py-self normally fetches its client
@@ -118,11 +118,14 @@ init()
 set_theme("discord")
 
 
-def get_batch_wait_time(server: bool = False):
+def get_batch_wait_time(server: bool = False, message=None):
     """How long to sit on a message before answering it. Servers get their own table when configured: ten minutes on a DM reads as away-from-phone, on a channel the chat has moved on and the reply lands on nothing; unset, servers fall back to the DM table."""
     b = config["bot"]
     wait_times = (b.get("server_batch_wait_times") if server else None)         or b["batch_wait_times"]
     # Picked by weight; a wait with a "to" is any whole second across its range (behavior.pick_wait).
+    active = getattr(bot, "active_chat", None)
+    if active is not None and message is not None:
+        return active.wait(pick_wait(wait_times), message)
     return pick_wait(wait_times)
 
 
@@ -635,6 +638,10 @@ def create_bot() -> commands.Bot:
     b.processing_locks = {}
     b.user_message_batches = {}
     b.active_conversations = {}
+    b.active_chat = engagement.ActiveChat(f"discord:{ACCOUNT_INDEX}")
+    b.mutual_vocabulary = lingo.MutualVocabulary(
+        get_guild=b.get_guild, self_id=lambda: b.user.id, allow_fetch=profile_fetch_allowed,
+        is_friend=lambda uid: getattr(b.get_relationship(uid), "type", None) == discord.RelationshipType.friend)
     b.last_sent_picture = {}
     b._memory_cache = {}
     b.paused_users = set()
@@ -938,7 +945,9 @@ def emit_chat_meta():
     try:
         until = 0.0
         if GLOBAL_COOLDOWN_ENABLED:
-            until = getattr(bot, "last_global_send", 0.0) + GLOBAL_COOLDOWN_MIN
+            _gap = (bot.active_chat.wait(GLOBAL_COOLDOWN_MIN, None)
+                    if getattr(bot, "active_chat", None) else GLOBAL_COOLDOWN_MIN)
+            until = getattr(bot, "last_global_send", 0.0) + _gap
         emit_chat_event({"t": "meta", "paused": bool(getattr(bot, "paused", False)),
                          "cooldown_until": until if until > time.time() else 0})
     except Exception:
@@ -1136,50 +1145,41 @@ def _pick_status(status_cfg: dict, status_map: dict, defaults: dict):
 
 
 async def random_status_loop():
-    """Realistic presence, not random flipping. Humans stay online for long stretches, occasionally idle out, rarely set dnd on purpose, and are invisible while asleep. Randomly switching status every 30-180 minutes is an automation signature, so this keeps one status until a change feels natural and never flips when the persona's local time falls inside the night window (still replies: invisible is not offline)."""
+    """Hold online during active chats; apply normal presence changes outside them."""
     await bot.wait_until_ready()
-    status_map = {
-        "online": discord.Status.online,
-        "idle": discord.Status.idle,
-        "dnd": discord.Status.dnd,
-        "invisible": discord.Status.invisible,
-    }
-    _DEFAULT_WEIGHTS = {"online": 0.85, "idle": 0.12, "dnd": 0.03, "invisible": 0.0}
-    # wait 10-30 min before the FIRST change, flipping presence right after login is a classic automation tell
-    await asyncio.sleep(random.uniform(600, 1800))
-    _last_status = None
+    status_map = {"online": discord.Status.online, "idle": discord.Status.idle,
+                  "dnd": discord.Status.dnd, "invisible": discord.Status.invisible}
+    defaults = {"online": 0.85, "idle": 0.12, "dnd": 0.03, "invisible": 0.0}
+    next_change = time.monotonic() + random.uniform(600, 1800)
+    last_active = False
     while not bot.is_closed():
         status_cfg = config["bot"].get("status") or {}
-        night_cfg = config["bot"].get("night_invisible") or {}
-        night, secs_until_day = night_window_state(night_cfg)
-
-        if night:
-            # which status the night window uses is a setting; it was hardcoded to invisible, which is the sensible default but not everyone's: some accounts read as more natural asleep on dnd or idle
-            target = status_map.get(
-                str(night_cfg.get("status", "invisible")).strip().lower(),
-                discord.Status.invisible,
-            )
-        else:
-            target = _pick_status(status_cfg, status_map, _DEFAULT_WEIGHTS)
-
-        if target != _last_status:
+        active = not bot.paused and bot.active_chat.active()
+        target = None
+        if active:
+            target = discord.Status.online
+        elif status_cfg.get("enabled", True) and (last_active or time.monotonic() >= next_change):
+            night_cfg = config["bot"].get("night_invisible") or {}
+            night, secs_until_day = night_window_state(night_cfg)
+            target = (status_map.get(str(night_cfg.get("status", "invisible")).strip().lower(),
+                                     discord.Status.invisible) if night else
+                      _pick_status(status_cfg, status_map, defaults))
+            if night:
+                interval = max(60, (secs_until_day or 3600) + random.uniform(0, 1200))
+            else:
+                interval = random.randint(status_cfg.get("change_interval_min", 1800),
+                                          status_cfg.get("change_interval_max", 10800)) * random.uniform(0.7, 1.3)
+            next_change = time.monotonic() + interval
+        if target is not None and target != bot.shown_status:
             try:
                 await bot.change_presence(status=target)
-                _last_status = target
                 bot.shown_status = target
                 log_system(f"Presence: {target}")
-            except Exception as e:
-                log_error("Presence", str(e))
-
-        if night:
-            # sleep through the night; wake 0-20 min after sunrise so the account doesn't flip online at exactly 8:00:00
-            await asyncio.sleep(max(60, (secs_until_day or 3600) + random.uniform(0, 1200)))
-        else:
-            base = random.randint(
-                status_cfg.get("change_interval_min", 1800),
-                status_cfg.get("change_interval_max", 10800),
-            )
-            await asyncio.sleep(base * random.uniform(0.7, 1.3))
+            except Exception as exc:
+                log_error("Presence", str(exc))
+        last_active = active
+        # A night-long sleep used to prevent ongoing conversations from waking presence.
+        await asyncio.sleep(15)
 
 
 def get_terminal_size():
@@ -2460,7 +2460,9 @@ async def _tg_ipc_loop():
                     # why nothing has moved yet, so the page can say "in 40s" rather than leaving a list of unanswered people with no explanation; all of it is state the runner already holds
                     _cool_until = 0.0
                     if GLOBAL_COOLDOWN_ENABLED:
-                        _cool_until = getattr(bot, "last_global_send", 0.0) + GLOBAL_COOLDOWN_MIN
+                        _gap = (bot.active_chat.wait(GLOBAL_COOLDOWN_MIN, None)
+                                if getattr(bot, "active_chat", None) else GLOBAL_COOLDOWN_MIN)
+                        _cool_until = getattr(bot, "last_global_send", 0.0) + _gap
                     _ignored_set = set(getattr(bot, "ignore_users", []))
                     for _u in users_out:
                         try:
@@ -2479,7 +2481,10 @@ async def _tg_ipc_loop():
                         "paused": getattr(bot, "paused", False),
                         # Unix time when the next reply may be sent, or 0.
                         "cooldown_until": _cool_until if _cool_until > time.time() else 0,
-                        "cooldown_range": [GLOBAL_COOLDOWN_MIN, GLOBAL_COOLDOWN_MAX]
+                        "cooldown_range": [bot.active_chat.wait(value, None) for value in
+                                           (GLOBAL_COOLDOWN_MIN, GLOBAL_COOLDOWN_MAX)]
+                        if getattr(bot, "active_chat", None) and GLOBAL_COOLDOWN_ENABLED else
+                        [GLOBAL_COOLDOWN_MIN, GLOBAL_COOLDOWN_MAX]
                         if GLOBAL_COOLDOWN_ENABLED else None,
                     })
 
@@ -3333,8 +3338,8 @@ async def on_ready():
 
     print_separator()
 
-    if config["bot"]["status"].get("enabled", True):
-        asyncio.create_task(random_status_loop())
+    # Both settings are read by the loop, so enabling active chat later works without a restart.
+    asyncio.create_task(random_status_loop())
 
     # people who cannot be messaged, remembered across restarts; without this a blocked conversation reappeared on the waiting list on every launch, and every reply to it failed with the same 403
     try:
@@ -3558,6 +3563,7 @@ async def _get_user_profile_block(user) -> str:
                 if bio is None and profile_fetch_allowed():
                     try:
                         profile = await user.profile()
+                        bot.mutual_vocabulary.remember(user.id, profile)
                         bio = getattr(profile, 'bio', None) or ""
                     except Exception:
                         bio = ""
@@ -3861,7 +3867,11 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
     enriched_instructions = load_instructions() + mood_block + memory_block + profile_block
     enriched_instructions += companion_memory.context_block(
         uid, companion_memory.discord_scope(message), history)
-    enriched_instructions += lingo.context_block(message, prompt, history)
+    if getattr(bot, "active_chat", None) is not None:
+        bot.active_chat.touch(message)
+        enriched_instructions += bot.active_chat.context_block(message)
+    shared_guilds = await bot.mutual_vocabulary.for_message(message, prompt, history)
+    enriched_instructions += lingo.context_block(message, prompt, history, shared_guilds=shared_guilds)
 
     # in a server the history is the whole channel, several people talking, and each of their turns is prefixed with who said it; the model has to be told that, or it reads the names as part of what was said and starts prefixing its own replies the same way
     if in_server(message.channel):
@@ -4241,6 +4251,8 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
             _crowd = min(1.0, (_waiting_now - 1) / 3.0)
             _global_cooldown_gap = (_global_cooldown_gap * (1 - _crowd)
                                     + GLOBAL_COOLDOWN_MIN * 0.5 * _crowd)
+        if getattr(bot, "active_chat", None) is not None:
+            _global_cooldown_gap = bot.active_chat.wait(_global_cooldown_gap, message)
         if _time_since_last < _global_cooldown_gap:
             set_reply_state(message.author.id, "cooldown",
                             eta=time.time() + (_global_cooldown_gap - _time_since_last))
@@ -4685,6 +4697,7 @@ def _get_server_chat():
             get_config=lambda: companion_memory.settings().get("server") or {},
             respond=_reply_in_server, learn=_learn_in_server, seed=_seed_server_chat,
             can_reply=_server_can_reply, scheduled=_server_reply_scheduled,
+            is_active=lambda m: bool(getattr(bot, "active_chat", None) and bot.active_chat.active(m)),
             report=lambda exc: log_error("Server companion", type(exc).__name__))
         bot.server_companion = _server_chat
     return _server_chat
@@ -4716,6 +4729,8 @@ def _server_can_reply(message):
 
 
 def _server_reply_scheduled(message, delay):
+    if getattr(bot, "active_chat", None) is not None:
+        bot.active_chat.touch(message)
     bot.server_waiting[message.channel.id] = message
     set_reply_state(message.author.id, "waiting", eta=time.time()+delay)
     emit_chat_event({"t": "msg", "uid": f"ch{message.channel.id}", **server_row(message)})
@@ -4938,6 +4953,7 @@ async def on_message(message):
     if (is_trigger or (is_followup and bot.hold_conversation)) and not bot.paused:
         if (
             random.random() < IGNORE_CHANCE
+            and not (getattr(bot, "active_chat", None) and bot.active_chat.active(message))
             and not (content_has_trigger and TRIGGER_BYPASSES_IGNORE)
             and not (mentioned and MENTION_BYPASSES_IGNORE)
             and not message.content.startswith(PREFIX)
@@ -4970,6 +4986,9 @@ async def on_message(message):
                 set_reply_state(user_id, "skipped", eta=current_time + COOLDOWN_DURATION,
                                 reason="they sent a burst of messages, cooling down")
             return
+
+        if getattr(bot, "active_chat", None) is not None:
+            bot.active_chat.touch(message)
 
         if batch_key not in bot.message_queues:
             bot.message_queues[batch_key] = deque()
@@ -5025,7 +5044,7 @@ async def process_message_queue(batch_key):
                     if priority:
                         emit_use("bot.priority_prefix", PRIORITY_PREFIX)
                     wait_time = 0 if priority else get_batch_wait_time(
-                        server=in_server(message.channel))
+                        server=in_server(message.channel), message=message)
                     bot.user_message_batches[batch_key]["reply_at"] = current_time + wait_time
                     set_reply_state(message.author.id, "waiting", eta=current_time + wait_time)
                     channel_name, guild_name = get_channel_context(message)

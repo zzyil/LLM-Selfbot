@@ -109,8 +109,15 @@ learning. Unknown, tentative or disputed usage can lead to a short clarification
 
 Vocabulary is stored in the existing SQLite database by persona and server and
 survives restarts and backups. Public-channel vocabulary can apply across that
-server. Private channels and private threads keep their own scope. It is not reused
-in another server or DM. Explicit memory copies include vocabulary; deleting a
+server. Private channels and private threads keep their own scope. Other servers
+retain their own dialect. With `bot.server_lingo.share_with_mutuals` (default true),
+public server vocabulary also works in DMs with Discord friends or verified members
+of its source server. Every recipient of a group DM must qualify. Membership comes
+from Discord profiles, cached for five minutes, rather than chat claims; failed or
+budget-limited lookups grant no new access. Only servers the account still belongs
+to qualify. No private-channel words, source quotes or member IDs travel with it.
+Competing meanings from different communities remain disputed in a DM. The character
+does not assume friends already know a word just because it does. Explicit memory copies include vocabulary; deleting a
 persona removes its dictionary. Only relevant terms enter reply context, and the
 social assessor receives the same meanings so it can interpret local jokes and digs.
 Meanings remain untrusted lexical data: they cannot set persona rules or establish
@@ -135,6 +142,29 @@ The local API supports inspection and corrections:
 There is no shared hardcoded definition of "snouted": its meaning comes from the
 community's explanations or an explicit local correction. Model inference can still
 misunderstand usage; evidence and uncertainty reduce that risk rather than eliminate it.
+
+## Conversation availability
+
+`bot.active_chat.enabled` defaults to true. Accepted messages and reply generation
+refresh a two-hour active window for that person and channel. During the window,
+random batch waits and the discretionary send gap are capped at eight seconds,
+random ignore rolls cannot skip an ongoing conversation, and scheduled presence
+stays online even during night hours. Typing, reading, model inference, actual rate
+limits and queued work can still take time. Owner pauses, cancellations, ignored
+users and spam limits remain effective.
+
+The character is told to stay engaged rather than invent sleep, food or other AFK
+excuses. It still respects a person's goodbye or request for space. Companion server
+conversations can continue beyond the normal two-follow-up/45-second limit while
+active; replies directed to somebody else do not become follow-ups. Quiet server
+chatter does not open or extend an active window on its own.
+
+Set `bot.active_chat.minutes` (default 120) and
+`bot.active_chat.max_batch_wait_seconds` (default 8) in Settings. Activity is bounded
+to 256 conversations per account/persona and persisted in SQLite at most once per
+minute per conversation, so a restart retains the window within a minute. It is
+deleted with the persona and is not copied as personal memory. The presence loop
+checks activity every fifteen seconds instead of sleeping through an entire night.
 
 ## Character reactions and context
 

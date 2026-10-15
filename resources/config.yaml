@@ -65,6 +65,7 @@ bot:
     max_bytes: 32768  # UTF-8 input budget, including the persona text
   server_lingo:
     enabled: false
+    share_with_mutuals: true
     max_terms: 200
     learning_min_messages: 6
     learning_interval_seconds: 120
@@ -152,6 +153,12 @@ bot:
 
   # Wait and collect multiple messages before responding
   batch_messages: true
+
+  # Remain available while a conversation is active; refreshed by accepted chat.
+  active_chat:
+    enabled: true
+    minutes: 120
+    max_batch_wait_seconds: 8
 
   # Time before responding
   batch_wait_times:

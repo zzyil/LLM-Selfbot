@@ -84,6 +84,22 @@ class ServerConversations(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Sam [user 2]: same lol", transcript)
         self.assertEqual(self.sent[0][0].id, 3)
 
+    async def test_active_conversation_continues_past_two_followups_and_short_timeout(self):
+        self.chat.is_active = lambda m: m.author.id == 1
+        self.chat.receive(message(1, text="G hey"))
+        await self.settle()
+        for mid in range(2, 7):
+            self.time += 90
+            self.chat.receive(message(mid, text="and what about that?"))
+            await self.settle()
+        self.assertEqual(len(self.sent), 6)
+        elsewhere = message(7, text="what do you think?")
+        elsewhere.reference = types.SimpleNamespace(resolved=message(80, uid=2))
+        self.chat.receive(elsewhere)
+        self.chat.receive(message(8, uid=2, text="talking to someone else"))
+        await self.settle()
+        self.assertEqual(len(self.sent), 6)
+
     async def test_larger_channel_window_survives_edits_and_deletions(self):
         self.config["history_messages"] = 200
         for mid in range(1, 121):

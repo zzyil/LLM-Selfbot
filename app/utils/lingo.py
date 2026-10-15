@@ -18,6 +18,7 @@ _QUESTION = re.compile(r"\bwhat\s+(?:does|do)\b.{1,70}\bmean\b", re.IGNORECASE)
 def settings(config=None):
     raw = (conversation._config(config).get("bot") or {}).get("server_lingo") or {}
     return {"enabled": bool(raw.get("enabled", False)),
+            "share_with_mutuals": bool(raw.get("share_with_mutuals", True)),
             "max_terms": conversation._integer(raw.get("max_terms"), 200, 10, 1000),
             "learning_min_messages": conversation._integer(raw.get("learning_min_messages"), 6, 2, 20),
             "learning_interval_seconds": conversation._integer(raw.get("learning_interval_seconds"), 120, 10, 3600)}
@@ -237,13 +238,49 @@ def forget_source(message_id, persona=None):
                      "AND e.meaning_id=server_lingo.meaning_id)", (persona_key(persona),))
 
 
-def context_block(message, prompt, history=None):
-    if not settings()["enabled"] or getattr(message, "guild", None) is None:
+def _context_text(prompt, history):
+    return prompt + "\n" + "\n".join(str(turn.get("content") or "") for turn in (history or [])[-8:])
+
+
+def shared_candidates(prompt, history=None):
+    """Only public lexical entries can travel to known people outside a server."""
+    if not settings()["enabled"] or not settings()["share_with_mutuals"]:
+        return set()
+    text = _context_text(prompt, history)
+    with _connect() as conn:
+        _schema(conn)
+        rows = conn.execute("SELECT DISTINCT guild_id,term FROM server_lingo WHERE persona=? "
+                            "AND scope_channel='0'", (persona_key(),)).fetchall()
+    return {guild for guild, term in rows if _contains(term, text)}
+
+
+def context_block(message, prompt, history=None, *, shared_guilds=()):
+    if not settings()["enabled"]:
         return ""
-    text = prompt + "\n" + "\n".join(str(turn.get("content") or "") for turn in (history or [])[-8:])
-    available = glossary(message.guild.id, message.channel.id)
+    text = _context_text(prompt, history)
+    guild = getattr(message, "guild", None)
+    if guild is None:
+        if not settings()["share_with_mutuals"]:
+            return ""
+        # The transport verifies the complete DM/group audience, never chat-supplied server claims.
+        available = [entry for gid in sorted(set(map(str, shared_guilds)))
+                     for entry in glossary(gid, "0")]
+    else:
+        available = glossary(guild.id, message.channel.id)
     by_term = {entry["term"]: entry for entry in available if entry["scope_channel"] == "0"}
     by_term.update({entry["term"]: entry for entry in available if entry["scope_channel"] != "0"})
+    if guild is None:
+        # Keep competing community meanings distinct instead of picking whichever server came last.
+        by_term = {}
+        for entry in available:
+            target = by_term.setdefault(entry["term"], {"term": entry["term"], "senses": []})
+            for sense in entry["senses"]:
+                if not any(s["meaning"] == sense["meaning"] for s in target["senses"]):
+                    target["senses"].append(dict(sense))
+        for entry in by_term.values():
+            if len(entry["senses"]) > 1:
+                for sense in entry["senses"]:
+                    sense["status"] = "disputed"
     entries = [entry for entry in by_term.values() if _contains(entry["term"], text)][:16]
     if not entries:
         return ""
@@ -251,6 +288,57 @@ def context_block(message, prompt, history=None):
     data = [{"term": entry["term"], "senses": [{"meaning": sense["meaning"], "status": sense["status"]}
             for sense in entry["senses"]]} for entry in entries]
     return conversation.data_context("server vocabulary", data)
+
+
+class MutualVocabulary:
+    """Discord-verified friends/shared servers, with short-lived profile lookups."""
+    def __init__(self, *, get_guild, is_friend, self_id, allow_fetch=lambda: True, clock=time.monotonic):
+        self.get_guild, self.is_friend, self.self_id = get_guild, is_friend, self_id
+        self.allow_fetch, self.clock = allow_fetch, clock
+        self.profiles = OrderedDict()
+
+    def remember(self, user_id, profile):
+        mutual = getattr(profile, "mutual_guilds", None)
+        if mutual is not None:
+            self.profiles[user_id] = (self.clock()+300, {str(g.id) for g in mutual})
+            self.profiles.move_to_end(user_id)
+            while len(self.profiles) > 256:
+                self.profiles.popitem(last=False)
+
+    async def _mutuals(self, user):
+        cached = self.profiles.get(user.id)
+        if cached and cached[0] > self.clock():
+            return cached[1]
+        self.profiles.pop(user.id, None)
+        if not self.allow_fetch():
+            return set()
+        try:
+            profile = await asyncio.wait_for(user.profile(with_mutual_guilds=True,
+                with_mutual_friends=False, with_mutual_friends_count=False), timeout=5)
+            self.remember(user.id, profile)
+        except Exception:  # noqa: BLE001, S110 - unavailable membership means no shared vocabulary
+            pass
+        if user.id not in self.profiles:
+            self.profiles[user.id] = (self.clock()+30, set())
+            while len(self.profiles) > 256:
+                self.profiles.popitem(last=False)
+        return self.profiles[user.id][1]
+
+    async def for_message(self, message, prompt, history=None):
+        if getattr(message, "guild", None) is not None:
+            return set()
+        candidates = {gid for gid in shared_candidates(prompt, history) if self.get_guild(int(gid)) is not None}
+        if not candidates:
+            return set()
+        audience = {user.id: user for user in (getattr(message.channel, "recipients", None) or [])
+                    if user.id != self.self_id()}
+        audience[message.author.id] = message.author
+        for user in audience.values():
+            if not self.is_friend(user.id):
+                candidates &= await self._mutuals(user)
+            if not candidates:
+                break
+        return candidates
 
 
 async def learn(guild_id, scope_channel, messages, *, still_current=None):

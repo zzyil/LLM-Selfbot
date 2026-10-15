@@ -53,11 +53,13 @@ class Channel:
 class ServerChat:
     def __init__(self, *, self_id, get_config, respond, learn, seed, can_reply,
                  scheduled=lambda message, delay: None, report=lambda exc: None,
-                 clock=time.monotonic, wall_clock=time.time, rng=random.random):
+                 clock=time.monotonic, wall_clock=time.time, rng=random.random,
+                 is_active=lambda message: False):
         self.self_id, self.get_config = self_id, get_config
         self.respond, self.learn, self.seed = respond, learn, seed
         self.can_reply, self.report, self.clock, self.rng = can_reply, report, clock, rng
         self.scheduled, self.wall_clock = scheduled, wall_clock
+        self.is_active = is_active
         self.channels = OrderedDict()
         self.reply_tasks = set()
         self.reply_slot = asyncio.Semaphore(1)
@@ -119,12 +121,14 @@ class ServerChat:
                 and state.pending[0].author.id == message.author.id \
                 and state.pending[1] != "ambient":
             return state.pending[1]
+        engaged = self.is_active(message)
         if not talking_elsewhere and state.current is not None \
-                and state.current.author.id == message.author.id and state.followups < 2:
+                and state.current.author.id == message.author.id and (state.followups < 2 or engaged):
             return "followup"
         followup_seconds = _number(config, "followup_seconds", 45, 0, 300)
         if not talking_elsewhere and message.author.id == state.last_author \
-                and self.clock()-state.last_reply < followup_seconds and state.followups < 2:
+                and (self.clock()-state.last_reply < followup_seconds or engaged) \
+                and (state.followups < 2 or engaged):
             return "followup"
         chance = _number(config, "ambient_reply_probability", 0, 0, 1)
         if not talking_elsewhere and self.rng() < chance:
@@ -172,7 +176,7 @@ class ServerChat:
                     message, reason = pending
                     if not self.can_reply(message):
                         continue
-                    if reason == "followup" and state.followups >= 2:
+                    if reason == "followup" and state.followups >= 2 and not self.is_active(message):
                         continue
                     created_at = getattr(message, "created_at", None)
                     max_age = _number(config, "max_reply_age_seconds", 120, 10, 600)
