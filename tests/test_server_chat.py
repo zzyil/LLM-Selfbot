@@ -159,6 +159,15 @@ class ServerConversations(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.sent), 1)
         self.assertIn("the server topic", json_text(self.sent[0][1]))
         self.assertTrue(self.sent[0][2])
+        # The legacy trigger path also honors the active window, but retains its owner controls.
+        bot.active_chat = types.SimpleNamespace(followup=lambda m, self_id: m.author.id == 1)
+        followup = message(3, text="what about this though?")
+        followup.channel = text_channel(id=100, parent_id=None)
+        self.assertTrue((await namespace["is_trigger_message"](followup))[0])
+        bot.hold_conversation = False
+        self.assertFalse((await namespace["is_trigger_message"](followup))[0])
+        bot.hold_conversation, bot.allow_server = True, False
+        self.assertFalse((await namespace["is_trigger_message"](followup))[0])
 
     async def test_several_members_addressing_in_one_burst_get_one_reply(self):
         self.chat.receive(message(1, text="G, hey"))

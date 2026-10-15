@@ -82,6 +82,23 @@ class Availability(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.active.wait(1600, message()), 1600)
         self.assertEqual(self.active.context_block(message()), "")
 
+    def test_server_followup_only_continues_with_last_member_and_respects_other_targets(self):
+        m = message()
+        self.active.touch(m)
+        self.assertTrue(self.active.followup(m, 99))
+        m.mentions = [types.SimpleNamespace(id=11)]
+        self.assertFalse(self.active.followup(m, 99))
+        m.mentions = []
+        m.reference = types.SimpleNamespace(resolved=None)
+        self.assertFalse(self.active.followup(m, 99))
+        m.reference.resolved = message(uid=11)
+        self.assertFalse(self.active.followup(m, 99))
+        m.reference.resolved = message(uid=99)
+        self.assertTrue(self.active.followup(m, 99))
+        self.now += 1
+        self.active.touch(message(uid=11))
+        self.assertFalse(self.active.followup(m, 99))
+
     def test_guidance_prevents_fabricated_breaks_and_respects_goodbyes(self):
         self.active.touch(message())
         block = self.active.context_block(message())

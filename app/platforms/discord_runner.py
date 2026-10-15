@@ -3503,6 +3503,8 @@ async def is_trigger_message(message):
     if is_server and not getattr(bot, "allow_server", True):
         mentioned = False
         replied_to = False
+    elif is_server and bot.hold_conversation and getattr(bot, "active_chat", None) is not None:
+        in_conversation = bot.active_chat.followup(message, bot.selfbot_id)
 
     _trig = (
         TRIGGER_RE.search(message.content.lower())

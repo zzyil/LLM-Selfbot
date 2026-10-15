@@ -60,6 +60,24 @@ class ActiveChat:
     def wait(self, seconds, message):
         return min(seconds, settings()["max_batch_wait_seconds"]) if self.active(message) else seconds
 
+    def followup(self, message, self_id):
+        """Continue with the last engaged member, without grabbing replies addressed elsewhere."""
+        if not self.active(message):
+            return False
+        prefix = f"{message.channel.id}:"
+        latest = max((key for key in self.recent if key.startswith(prefix)),
+                     key=lambda key: self.recent[key], default=None)
+        if latest != self.key(message):
+            return False
+        if any(user.id != self_id for user in (getattr(message, "mentions", None) or [])):
+            return False
+        reference = getattr(message, "reference", None)
+        if reference is not None:
+            author = getattr(getattr(reference, "resolved", None), "author", None)
+            if author is None or author.id != self_id:
+                return False
+        return True
+
     def context_block(self, message):
         if not self.active(message):
             return ""
