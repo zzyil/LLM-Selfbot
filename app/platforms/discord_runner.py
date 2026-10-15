@@ -2684,6 +2684,10 @@ async def _tg_ipc_loop():
                         "friends": len(getattr(bot, "friends", []) or []),
                     })
 
+                elif cmd == "server_memory":
+                    from app.utils.server_memory import snapshot
+                    _write_result(cmd_id, snapshot(bot, _server_chat))
+
                 elif cmd == "mood_get":
                     import app.utils.mood as _mood_mod
                     _write_result(cmd_id, {"mood": _mood_mod.current_mood})

@@ -143,6 +143,28 @@ There is no shared hardcoded definition of "snouted": its meaning comes from the
 community's explanations or an explicit local correction. Model inference can still
 misunderstand usage; evidence and uncertainty reduce that risk rather than eliminate it.
 
+## Inspecting server memory
+
+The Dashboard includes a server-memory overview for the selected character: connected
+servers, learned terms, observed channels and disputed definitions. **Manage memories**
+opens **Memory → Servers & vocabulary**. The existing People & relationships view keeps
+the character's shared person memory.
+
+Select a server to search its dictionary, filter by confidence or public/private scope,
+correct a definition, add a term, or forget a scoped entry. Corrections replace all
+competing meanings for that term in that scope. Set the scope channel ID to `0` for
+server-wide vocabulary or a private channel's ID for an isolated meaning. A private
+correction never promotes the term to server-wide memory. Forgotten words can be learned
+again from future messages.
+
+Connected servers appear before they have learned any words. Stored vocabulary stays
+available when the account is offline; a saved server without live metadata is identified
+by its Discord ID. Channel activity shows recent message/member counts, context size and
+reading/replying/sending state from the runner's cache. Those activity counts reset on
+restart; definitions persist. Reading does not guarantee participation. An unavailable
+runner is reported separately from an empty vocabulary. This page edits lexical memory,
+not model weights or the character's identity.
+
 ## Conversation availability
 
 Discord chat commands are disabled by default (`bot.chat_commands.enabled: false`):

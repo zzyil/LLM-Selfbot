@@ -1154,3 +1154,35 @@ async def lingo_delete(request: Request, guild_id: str, term: str, channel_id: s
     guild, channel = _lingo_ids(guild_id, channel_id)
     await asyncio.to_thread(lingo.remove, guild, term, channel, _memory_persona(persona))
     return {"ok": True}
+
+
+@router.get("/api/server-memories")
+async def server_memories(request: Request, persona: str = ""):
+    from app.utils import configstore, personas, server_memory
+    from app.web import live
+    pid = _memory_persona(persona)
+    stored = await asyncio.to_thread(server_memory.remembered, pid)
+    accounts = sorted(web_id for web_id in live.running_accounts(request)
+                      if web_id.startswith("discord_") and personas.persona_of(web_id) == pid)
+
+    async def read(web_id):
+        try:
+            data = await ipc.send_and_wait(ipc.target_for(web_id), "server_memory", timeout=3)
+            return web_id, data if isinstance(data, dict) and "servers" in data else None
+        except Exception:
+            return web_id, None
+
+    answers = await asyncio.gather(*(read(account) for account in accounts))
+    active = [(account, data) for account, data in answers if data is not None]
+    cfg = await asyncio.to_thread(configstore.effective, pid)
+    bot_cfg = cfg.get("bot") or {}
+    companion = bot_cfg.get("companion") or {}
+    participation = companion.get("server") or {}
+    vocab = bot_cfg.get("server_lingo") or {}
+    return {"servers": server_memory.merge(stored, active),
+            "live_accounts": len(active), "unavailable_accounts": len(accounts)-len(active),
+            "settings": {"learning": bool(vocab.get("enabled", False)),
+                         "share_with_mutuals": bool(vocab.get("share_with_mutuals", True)),
+                         "participation": bool(companion.get("enabled") or participation.get("enabled")),
+                         "ambient_probability": participation.get("ambient_reply_probability", 0),
+                         "activity_window_seconds": participation.get("ambient_window_seconds", 600)}}

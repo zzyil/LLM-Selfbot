@@ -290,6 +290,12 @@ export const api = {
       body: JSON.stringify({ user_id, target }),
     }),
   // What one persona remembers about people: each has its own (Default's when none is named).
+  serverMemories: (persona = "") => request(scoped("/api/server-memories", persona)),
+  serverLingo: (guild: string, persona = "") => request(scoped(`/api/lingo?guild_id=${encodeURIComponent(guild)}`, persona)),
+  serverLingoPut: (guild: string, body: { term: string; meaning: string; scope_channel: string }, persona = "") =>
+    request(scoped(`/api/lingo/${encodeURIComponent(guild)}`, persona), { method: "PUT", body: JSON.stringify(body) }),
+  serverLingoDelete: (guild: string, term: string, channel: string, persona = "") =>
+    request(scoped(`/api/lingo/${encodeURIComponent(guild)}/${encodeURIComponent(term)}?channel_id=${encodeURIComponent(channel)}`, persona), { method: "DELETE" }),
   memory: (persona = "") => request(scoped("/api/memory", persona)),
   memoryUser: (uid: string, persona = "") => request(scoped(`/api/memory/${uid}`, persona)),
   /** What you and this person have been talking about. `force` rewrites it; `cached` only reads the stored one and never writes. */

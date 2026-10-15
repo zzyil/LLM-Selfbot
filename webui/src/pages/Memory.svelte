@@ -29,6 +29,8 @@
   import { motionEnabled } from "../lib/stores";
   import { get } from "svelte/store";
   import { api } from "../lib/api";
+  import { memorySection } from "../lib/server-memory";
+  import ServerMemories from "../lib/components/ServerMemories.svelte";
   import { ask } from "../lib/ask";
   import { DAY_MONTH, fmtDate } from "../lib/fmt";
   import { toast, viewPersona } from "../lib/stores";
@@ -339,6 +341,14 @@
   }
 </script>
 
+<nav class="memory-sections" aria-label="Memory sections">
+  <button class:active={$memorySection === "people"} onclick={() => memorySection.set("people")}><Icon name="accounts" size={14} /> People & relationships</button>
+  <button class:active={$memorySection === "servers"} onclick={() => memorySection.set("servers")}><Icon name="globe" size={14} /> Servers & vocabulary</button>
+</nav>
+
+{#if $memorySection === "servers"}
+  <ServerMemories {pid} onpersona={switchTo} />
+{:else}
 <ErrorNote text={loadError} onretry={load} />
 
 {#if loading}
@@ -585,7 +595,12 @@
   </div>
 {/if}
 
+{/if}
+
 <style>
+  .memory-sections { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+  .memory-sections button { display: flex; align-items: center; gap: 7px; padding: 9px 13px; border: 1px solid var(--color-edge); border-radius: 11px; font-size: 12px; color: var(--color-faint); }
+  .memory-sections button.active { color: var(--color-accent); background: color-mix(in srgb, var(--color-accent) 9%, transparent); border-color: color-mix(in srgb, var(--color-accent) 25%, transparent); }
   /* ── The hero ── */
   .mm-hero {
     position: relative;
