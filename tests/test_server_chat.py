@@ -353,6 +353,15 @@ class ServerAccess(unittest.TestCase):
         self.assertFalse(social.message_allowed(message(1, channel=555, guild=21), self.config))
         self.assertFalse(social.message_allowed(message(1, channel=555, guild=None), self.config))
 
+    def test_character_preset_follows_servers_joined_later_without_a_new_profile(self):
+        base = yaml.safe_load((ROOT / "resources/config.yaml").read_text(encoding="utf-8"))
+        config = build_config(base, "local")
+        self.assertTrue(config["bot"]["companion"]["follow_joined_servers"])
+        self.assertTrue(social.message_allowed(message(1, channel=555, guild=999), config))
+        self.assertTrue(social.message_allowed(message(2, channel=666, guild=1000), config))
+        self.assertFalse(social.message_allowed(message(3, channel=777, guild=None), config))
+        self.assertFalse(self.config["bot"]["companion"]["follow_joined_servers"])
+
     def test_threads_inherit_only_an_allowed_parent(self):
         self.assertTrue(social.message_allowed(message(1, channel=101, parent=100), self.config))
         self.assertFalse(social.message_allowed(message(1, channel=101, parent=200), self.config))

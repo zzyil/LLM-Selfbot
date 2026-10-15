@@ -46,11 +46,54 @@ class Relationships(unittest.TestCase):
         self.assertEqual(profile["interactions"], 8)
         self.assertEqual(profile["affinity"], 0.48)
 
-    def test_relationships_are_isolated_by_server_and_persona(self):
+    def test_relationship_follows_the_person_but_stays_separate_for_other_characters(self):
         social.record_interaction("1", "server:a", "m", "friendly", persona="default", now=100)
-        self.assertEqual(social.get_relationship("1", "server:b", now=100)["relationship"], "new")
+        self.assertEqual(social.get_relationship("1", "server:b", now=100)["affinity"], 0.06)
+        self.assertEqual(social.get_relationship("1", "dm:123", now=100)["affinity"], 0.06)
         self.assertEqual(social.get_relationship("1", "server:a", persona="other", now=100)["relationship"], "new")
         self.assertEqual(len(social.list_relationships("1", now=100)), 1)
+
+    def test_old_server_memories_carry_forward_without_reset_or_double_count(self):
+        with db._connect() as conn:
+            conn.execute("INSERT INTO companion_relationships VALUES (?, ?, ?, ?, ?, ?)",
+                         ("default", "discord:guild:10", "1", 0.24, 4, 100))
+            conn.execute("INSERT INTO companion_relationships VALUES (?, ?, ?, ?, ?, ?)",
+                         ("default", "discord:chat:20", "1", 0.12, 2, 100))
+        before = social.get_relationship("1", "discord:guild:new", now=100)
+        self.assertEqual((before["affinity"], before["interactions"]), (0.36, 6))
+        social.record_interaction("1", "discord:guild:new", "new", "friendly", now=100)
+        social.record_interaction("1", "discord:chat:20", "later", "neutral", now=100)
+        after = social.get_relationship("1", now=100)
+        self.assertEqual((after["affinity"], after["interactions"]), (0.42, 8))
+        self.assertEqual(len(social.list_relationships("1", now=100)), 1)
+        with db._connect() as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM companion_relationships "
+                                          "WHERE scope!='character'").fetchone()[0], 2)
+
+    def test_repeated_message_in_another_server_does_not_recount_the_relationship(self):
+        social.record_interaction("1", "server:a", "same-id", "friendly", now=100)
+        self.assertFalse(social.record_interaction("1", "server:b", "same-id", "friendly", now=100))
+        self.assertEqual(social.get_relationship("1", now=100)["interactions"], 1)
+
+    def test_friend_is_recognized_after_a_new_server_and_process_restart(self):
+        for mid in range(8):
+            social.record_interaction("1", "discord:chat:20", str(mid), "friendly", now=100)
+        social.record_interaction("2", "discord:guild:10", "someone-else", "neutral", now=100)
+        memory.set_memory(1, "favorite_game", "co-op games")
+        # Start another process against the same character's data, in a new server context.
+        script = (
+            "import json; from app.utils import relationships as r, memory; "
+            "print(json.dumps({'relationship': r.get_relationship('1', "
+            "'discord:guild:joined-later', now=100), 'facts': memory.get_memory(1)}))"
+        )
+        result = subprocess.run([sys.executable, "-c", script], check=True, text=True,
+                                capture_output=True, timeout=10)
+        state = json.loads(result.stdout)
+        profile = state["relationship"]
+        self.assertEqual(profile["relationship"], "friend")
+        self.assertEqual(profile["interactions"], 8)
+        self.assertEqual(state["facts"]["favorite_game"], "co-op games")
+        self.assertEqual(social.get_relationship("2", now=100)["interactions"], 1)
 
     def test_bounds_foes_and_decay_on_return(self):
         for message in range(30):
@@ -89,7 +132,7 @@ class Relationships(unittest.TestCase):
         self.assertFalse(social.due("1", "s", "m", now=300))
         self.assertFalse(social.due("1", "s", "new", now=150))
         self.assertTrue(social.due("1", "s", "new", now=220))
-        self.assertTrue(social.due("1", "other", "new", now=150))
+        self.assertFalse(social.due("1", "other", "new", now=150))
 
     def test_allowlist_fails_closed_and_supports_snowflakes(self):
         self.assertTrue(social.channel_allowed(456, LOCAL))
@@ -147,7 +190,7 @@ class Relationships(unittest.TestCase):
         with TestClient(app) as client:
             response = client.get("/api/memory/1")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["relationships"][0]["scope"], "discord:guild:123")
+        self.assertEqual(response.json()["relationships"][0]["scope"], "character")
 
 
 class LocalRouting(unittest.TestCase):
@@ -243,7 +286,7 @@ class LocalRouting(unittest.TestCase):
 
         asyncio.run(run_hook())
         self.assertIn(("facts", 7, "batch"), calls)
-        self.assertIn(("relationship", 7, "discord:guild:9", 8, "hi"), calls)
+        self.assertIn(("relationship", 7, "character", 8, "hi"), calls)
         self.assertEqual(namespace["_memory_tasks"], set())
 
 

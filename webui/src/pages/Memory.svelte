@@ -486,14 +486,14 @@
         {#if detail}
           {#if detail.relationships?.length}
             <section class="mm-facts-card glass">
-              <header class="mm-head"><h3>Relationships</h3></header>
-              <p>Its attitude toward this person in each conversation.</p>
+              <header class="mm-head"><h3>Relationship</h3></header>
+              <p>How this character knows this person, wherever they meet.</p>
               <div class="mm-fact-grid">
                 {#each detail.relationships as relation (relation.scope)}
                   <div class="mm-fact">
                     <b>{relation.relationship.replaceAll("_", " ")}</b>
                     <p>{relation.interactions} analyzed interactions</p>
-                    <small>{relation.scope}</small>
+                    <small>{relation.scope === "character" ? "Shared across DMs and servers" : relation.scope}</small>
                   </div>
                 {/each}
               </div>

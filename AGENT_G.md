@@ -1,9 +1,28 @@
 # Agent G fork
 
-This fork keeps LLM-Selfbot's dashboard, Discord integration, model routing,
-message batching, conversation history and editable per-person memory. Its added
-companion mode supplies persistent attitudes and chat-style context. The upstream
-GPL-3.0 license remains in place.
+This fork develops one persistent character that lives on Discord. Its personality,
+memories and relationships belong to the character and carry into servers it joins
+later. It keeps LLM-Selfbot's dashboard, model routing and conversation handling.
+The upstream GPL-3.0 license remains in place.
+
+## One character, wherever it goes
+
+The account's selected persona is its character. One saved set of instructions
+defines its personality, and one persistent memory stores what it knows about
+each person. Discord user IDs identify people across nicknames, DMs and servers.
+Friendships and rivalries follow those people; joining a different server or
+restarting the app doesn't create a new version of the character.
+
+For example, G can get to know Alex in one place and recognize Alex when they
+meet in a new server months later. The relationship and remembered interests are
+still there, subject to normal relationship decay. The new channel gets its own
+short conversation history so unrelated messages don't get mixed together.
+
+The preset follows servers the account belongs to, including future memberships.
+Join a server normally with that Discord account when ready; the app doesn't
+accept invitations or join servers on its own. Keep the same persona assigned
+to the account to keep the same character. Chat vibe changes how it expresses
+itself, while its established personality and preferences remain consistent.
 
 ## Setup
 
@@ -23,16 +42,18 @@ a separate app, not a model ID. Read the server's model IDs:
 curl http://127.0.0.1:1234/v1/models
 ```
 
-Before the app's first launch, seed the profile using your exact model ID and the
-channel IDs it may read and answer. Enable Discord Developer Mode to copy IDs.
+Before the app's first launch, seed the character using your exact model ID and
+your Discord user ID. Enable Discord Developer Mode to copy IDs.
 
 ```sh
-.venv/bin/python scripts/setup_agent_g.py --model YOUR_MODEL_ID --owner-id YOUR_DISCORD_ID --channels CHANNEL_ID
+.venv/bin/python scripts/setup_agent_g.py --model YOUR_MODEL_ID --owner-id YOUR_DISCORD_ID
 .venv/bin/python main.py
 ```
 
-To allow a whole server, use `--servers SERVER_ID` instead of `--channels CHANNEL_ID`.
-You can also supply both options, each with comma-separated IDs.
+No server ID is needed for the character to follow the account into future servers.
+If you want to restrict its participation, pass `--servers SERVER_ID` or
+`--channels CHANNEL_ID`; supplying either option disables automatic participation
+in other joined servers. Both accept comma-separated IDs.
 
 The setup script refuses to overwrite existing runtime configuration. For an
 existing installation, edit the equivalent settings in `config/config.yaml`:
@@ -49,7 +70,8 @@ bot:
     small: {provider: local, model: YOUR_MODEL_ID}
   companion:
     enabled: true
-    allowed_channel_ids: ["CHANNEL_ID"]
+    follow_joined_servers: true
+    allowed_channel_ids: []
     allowed_guild_ids: []
     include_threads: true
 ```
@@ -57,8 +79,8 @@ bot:
 Copy `resources/agent-g-instructions.txt` into your persona's instructions, or
 edit its personality in the existing Persona page. Credentials stay in the app's
 ignored `config/.env`. The preset leaves account services stopped; add an account
-and start it explicitly from the dashboard. Empty channel and server lists
-observe and answer nothing. Threads inherit an allowed parent channel by default;
+and start it explicitly from the dashboard. With `follow_joined_servers: false`,
+empty channel and server lists observe and answer nothing. Threads inherit an allowed parent channel by default;
 set `include_threads: false` to require their own channel IDs. DMs and group chats
 need their own channel IDs and are disabled by the preset; enable them if needed.
 
@@ -74,7 +96,7 @@ Companion mode works in server text channels, threads and forum posts the accoun
 can access. Choose individual channels or whole servers. It keeps a shared recent
 transcript per channel, including members it doesn't answer. Nicknames carry user
 IDs so members with the same display name remain distinct. Threads have separate
-conversation history while relationships persist across their server.
+conversation history while the character's relationships remain shared everywhere.
 
 It answers direct mentions, replies to its messages, and its configured name.
 After a delivered reply, the same member can continue without another mention
@@ -105,7 +127,8 @@ cooldown. The default is zero. Change `names` to match your persona.
 
 Passive learning batches each member's own statements separately, after four
 messages or a direct interaction, at most once every two minutes per member and
-server. It can learn while staying silent. Other members' words never enter that
+server. This batching is an inference limit; learned facts still belong to the
+same character. It can learn while staying silent. Other members' words never enter that
 person's fact extractor. Passive chatter and ambient replies don't alter friendship
 scores; those require conversation directed to the companion. Live history tracks
 edits and deletions. No model weights are trained.
@@ -119,14 +142,19 @@ having blocked the account.
 
 Learning uses upstream's fact extractor, including passive server batches in
 companion mode. Facts remain editable in the Memory page. Upstream facts are
-scoped to a persona and person, and may be reused across that persona's channels.
-Relationship state is separately scoped to the persona, Discord server or private
-chat. A person can be a friend in one server and an acquaintance in another.
+scoped to the character and person, and follow them across conversations.
+Relationships use the same character/person identity, independent of servers or
+DM channels. Another persona is another character with its own memory.
+
+Earlier server-specific relationship records are carried into a single character
+relationship, with their existing interaction counts and decayed attitudes. Their
+source rows are preserved. New updates use the character's shared record and don't
+count the old snapshots again.
 
 The companion classifies clearly directed kindness or hostility using the
 background model, with a literal source quote. Ambiguous evidence stays neutral.
 Each message can move affinity at most 0.06; updates are limited to one per person
-and scope every two minutes. Five analyzed interactions are needed before a
+and character every two minutes, even if they switch servers. Five analyzed interactions are needed before a
 friend/wary/foe label is possible. Close friends need twenty. Attitudes decay
 toward neutral with a 60-day half-life. Foe means polite distance in the prompt.
 The Memory page shows the relationship states; its Forget action clears them

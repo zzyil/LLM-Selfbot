@@ -25,6 +25,7 @@ def build_config(base, model, owner_id=0, channels=(), servers=()):
     bot["companion"] = {
         "enabled": True, "allowed_channel_ids": [str(c) for c in channels],
         "allowed_guild_ids": [str(s) for s in servers], "include_threads": True,
+        "follow_joined_servers": not bool(channels or servers),
         "server": {"names": ["G"], "reply_to_name": True, "followup_seconds": 45,
                    "ambient_reply_probability": 0, "batch_wait_seconds": 3,
                    "reply_cooldown_seconds": 20, "max_reply_age_seconds": 120,

@@ -58,11 +58,12 @@ bot:
     tts_voice: ""         # voice names are per-engine (af_sky, alloy, ...)
 
   # Agent G companion mode. Opt in via scripts/setup_agent_g.py before first launch.
-  # Empty channel and server lists observe and answer nothing.
+  # With follow_joined_servers off, empty channel and server lists answer nothing.
   companion:
     enabled: false
     allowed_channel_ids: []
-    allowed_guild_ids: []       # opt in whole servers, or keep channel-level selection above
+    allowed_guild_ids: []       # optional server restrictions
+    follow_joined_servers: false # character preset enables this when no restrictions are supplied
     include_threads: true      # threads inherit an allowed parent channel
     server:
       names: ["G"]
