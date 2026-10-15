@@ -31,6 +31,9 @@ channel IDs it may read and answer. Enable Discord Developer Mode to copy IDs.
 .venv/bin/python main.py
 ```
 
+To allow a whole server, use `--servers SERVER_ID` instead of `--channels CHANNEL_ID`.
+You can also supply both options, each with comma-separated IDs.
+
 The setup script refuses to overwrite existing runtime configuration. For an
 existing installation, edit the equivalent settings in `config/config.yaml`:
 
@@ -47,14 +50,17 @@ bot:
   companion:
     enabled: true
     allowed_channel_ids: ["CHANNEL_ID"]
+    allowed_guild_ids: []
+    include_threads: true
 ```
 
 Copy `resources/agent-g-instructions.txt` into your persona's instructions, or
 edit its personality in the existing Persona page. Credentials stay in the app's
 ignored `config/.env`. The preset leaves account services stopped; add an account
-and start it explicitly from the dashboard. An empty companion channel list
-observes and answers nothing. Include each thread or DM's own channel ID to
-allow it. DMs and group chats are disabled by the preset; enable them if needed.
+and start it explicitly from the dashboard. Empty channel and server lists
+observe and answer nothing. Threads inherit an allowed parent channel by default;
+set `include_threads: false` to require their own channel IDs. DMs and group chats
+need their own channel IDs and are disabled by the preset; enable them if needed.
 
 `bot.local.only` filters all model chains to local providers and disables the
 implicit Groq fallback for background work, images and speech. Unsupported jobs
@@ -62,10 +68,57 @@ fail locally; they aren't sent to another provider. An unset chat model stays
 unconfigured. The app still connects to Discord and retains upstream networking
 features such as updates; this option controls inference providers.
 
+## Server conversations
+
+Companion mode works in server text channels, threads and forum posts the account
+can access. Choose individual channels or whole servers. It keeps a shared recent
+transcript per channel, including members it doesn't answer. Nicknames carry user
+IDs so members with the same display name remain distinct. Threads have separate
+conversation history while relationships persist across their server.
+
+It answers direct mentions, replies to its messages, and its configured name.
+After a delivered reply, the same member can continue without another mention
+for 45 seconds, up to two follow-ups. A reply or mention aimed at someone else
+doesn't count as a follow-up. One queue per channel combines bursts from multiple
+members into a single response, with a three-second collection window and a
+20-second cooldown between inference attempts. Stale requests expire after two
+minutes. Dashboard Reply and Cancel work with this queue.
+
+Customize these under `bot.companion.server` in `config/config.yaml`:
+
+```yaml
+names: ["G", "Agent G"]
+reply_to_name: true
+followup_seconds: 45
+ambient_reply_probability: 0.0
+batch_wait_seconds: 3
+reply_cooldown_seconds: 20
+max_reply_age_seconds: 120
+learn_from_chat: true
+learning_min_messages: 4
+learning_interval_seconds: 120
+```
+
+Ambient replies are optional: for example, `0.02` gives an otherwise unaddressed
+message a 2% chance to create a reply opportunity, subject to the same queue and
+cooldown. The default is zero. Change `names` to match your persona.
+
+Passive learning batches each member's own statements separately, after four
+messages or a direct interaction, at most once every two minutes per member and
+server. It can learn while staying silent. Other members' words never enter that
+person's fact extractor. Passive chatter and ambient replies don't alter friendship
+scores; those require conversation directed to the companion. Live history tracks
+edits and deletions. No model weights are trained.
+
+The account needs permission to view a channel and send messages there, including
+thread-specific permissions. If history access is unavailable, it uses messages
+observed during the session. A server permission failure doesn't mark a member as
+having blocked the account.
+
 ## Memory, relationships and vibe
 
-Learning uses upstream's fact extraction after conversations; it does not train
-model weights. Facts remain editable in the Memory page. Upstream facts are
+Learning uses upstream's fact extractor, including passive server batches in
+companion mode. Facts remain editable in the Memory page. Upstream facts are
 scoped to a persona and person, and may be reused across that persona's channels.
 Relationship state is separately scoped to the persona, Discord server or private
 chat. A person can be a friend in one server and an acquaintance in another.
@@ -85,14 +138,14 @@ message length, casing, laughter and emoji; the persona adapts its delivery whil
 keeping a consistent identity. Local models can still misread tone or facts, so
 inspect the Memory page rather than treating its notes as ground truth.
 
-This base learns from conversations it answers. Passive learning from unrelated
-channel messages, pairwise relationships between other members, fine-tuning, and
-semantic vector search are future extensions.
+Pairwise relationships between other members, fine-tuning, and semantic vector
+search are future extensions.
 
 ## Development
 
 ```sh
 .venv/bin/python tests/test_agent_g.py
+.venv/bin/python tests/test_server_chat.py
 .venv/bin/python tests/test_engine.py
 .venv/bin/python tests/test_localai.py
 .venv/bin/python tests/test_memory_brain.py

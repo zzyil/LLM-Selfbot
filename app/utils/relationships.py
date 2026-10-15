@@ -30,14 +30,23 @@ def discord_scope(message):
     return f"discord:guild:{guild.id}" if guild else f"discord:chat:{message.channel.id}"
 
 
-def channel_allowed(channel_id, config=None):
+def channel_allowed(channel_id, config=None, *, guild_id=None, parent_id=None):
     cfg = settings(config)
     if not cfg.get("enabled", False):
         return True
     allowed = cfg.get("allowed_channel_ids") or []
-    if not isinstance(allowed, (list, tuple)):
-        return False
-    return str(channel_id) in {str(value) for value in allowed}
+    guilds = cfg.get("allowed_guild_ids") or []
+    allowed = {str(value) for value in allowed} if isinstance(allowed, (list, tuple)) else set()
+    guilds = {str(value) for value in guilds} if isinstance(guilds, (list, tuple)) else set()
+    return str(channel_id) in allowed or (guild_id is not None and str(guild_id) in guilds) \
+        or (guild_id is not None and parent_id is not None and cfg.get("include_threads", True)
+            and str(parent_id) in allowed)
+
+
+def message_allowed(message, config=None):
+    guild = getattr(message, "guild", None)
+    return channel_allowed(message.channel.id, config, guild_id=getattr(guild, "id", None),
+                           parent_id=getattr(message.channel, "parent_id", None))
 
 
 def label(affinity, interactions):

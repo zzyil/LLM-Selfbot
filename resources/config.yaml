@@ -58,10 +58,23 @@ bot:
     tts_voice: ""         # voice names are per-engine (af_sky, alloy, ...)
 
   # Agent G companion mode. Opt in via scripts/setup_agent_g.py before first launch.
-  # No channels are observed/answered when this is enabled with an empty list.
+  # Empty channel and server lists observe and answer nothing.
   companion:
     enabled: false
     allowed_channel_ids: []
+    allowed_guild_ids: []       # opt in whole servers, or keep channel-level selection above
+    include_threads: true      # threads inherit an allowed parent channel
+    server:
+      names: ["G"]
+      reply_to_name: true
+      followup_seconds: 45
+      ambient_reply_probability: 0.0
+      batch_wait_seconds: 3
+      reply_cooldown_seconds: 20
+      max_reply_age_seconds: 120
+      learn_from_chat: true
+      learning_min_messages: 4
+      learning_interval_seconds: 120
 
   # The summary card on the Memory page: what you and each person have been
   # talking about, written from their last few messages when you open them.

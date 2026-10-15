@@ -341,7 +341,7 @@ def _recent_speakers(message, limit: int = 6) -> list:
         if entry.get("role") != "user":
             continue
         head = str(entry.get("content", "")).split(":", 1)
-        if len(head) == 2 and 0 < len(head[0]) <= 40:
+        if len(head) == 2 and 0 < len(head[0]) <= 120:
             name = head[0].strip()
             if name and name not in seen:
                 seen.add(name)
@@ -354,6 +354,9 @@ def _recent_speakers(message, limit: int = 6) -> list:
 def as_turn(message, content: str) -> str:
     """One user turn, attributed when the channel has more than one person in it."""
     if in_server(message.channel):
+        if companion_memory.settings().get("enabled", False):
+            name = re.sub(r"[\r\n:]", " ", speaker_label(message))[:60]
+            return f"{name} [user {message.author.id}]: {content}"
         return f"{speaker_label(message)}: {content}"
     return content
 
@@ -910,11 +913,15 @@ def cancel_pending_reply(uid, channel_id=None) -> bool:
     cancelled_replies with nothing pending would swallow the next real reply. With a channel, only the reply
     lined up there."""
     uid = int(uid)
+    server_chat = getattr(bot, "server_companion", None)
+    server_stopped = server_chat is not None and server_chat.cancel(channel_id, user_id=uid)
     prefix = f"{uid}-{channel_id}" if channel_id is not None else f"{uid}-"
     batches = [k for k in list(bot.user_message_batches) if k.startswith(prefix)]
-    pending = bool(batches) or (bot.reply_state.get(uid) or {}).get("state") in _PENDING_STATES
+    queued = any(k.startswith(prefix) for k in bot.message_queues)
+    pending = bool(batches) or queued or (not server_stopped
+        and (bot.reply_state.get(uid) or {}).get("state") in _PENDING_STATES)
     if not pending:
-        return False
+        return server_stopped
     bot.cancelled_replies.add(uid)
     for _bk in batches:
         bot.user_message_batches.pop(_bk, None)
@@ -1685,13 +1692,16 @@ async def _tg_ipc_loop():
                 _write_result(cmd_id, {"success": False, "dropped": True,
                                        "reason": "already answered, the bot has spoken there since"})
                 return
+            if _server_chat is not None:
+                _server_chat.cancel(cid)
             hk = history_key(waiting)
             await seed_history(hk, waiting)
-            history = bot.message_history.get(hk, [])
+            history = (_server_chat.history(cid) if _server_chat is not None else []) \
+                or bot.message_history.get(hk, [])
             combined = as_turn(waiting, waiting.content or "[attachment]")
-            if not history or history[-1].get("content") != combined:
+            if not any(turn.get("content") == combined for turn in history):
                 history.append({"role": "user", "content": combined})
-                bot.message_history[hk] = history
+            bot.message_history[hk] = history
             set_reply_state(waiting.author.id, "writing")
             resp = await generate_response_and_reply(waiting, combined, history, bypass_cooldown=True, bypass_typing=True)
             if resp:
@@ -3785,7 +3795,7 @@ async def _update_memory_after_reply(author, prompt, response):
         facts = await extract_memory(prompt, response, existing_memory=current_mem_snapshot)
         for key, value in facts.items():
             value = str(value).strip()
-            if not value:
+            if not value or str(key).startswith("__"):
                 continue
             set_memory(uid, key, value)
             bot._memory_cache.setdefault(uid, {})[key] = value
@@ -3794,8 +3804,8 @@ async def _update_memory_after_reply(author, prompt, response):
         log_error("Memory Error", str(mem_err))
 
 
-async def generate_response_and_reply(message, prompt, history, image_url=None, wait_time=0, bypass_cooldown=False, bypass_typing=False):
-    if not companion_memory.channel_allowed(message.channel.id):
+async def generate_response_and_reply(message, prompt, history, image_url=None, wait_time=0, bypass_cooldown=False, bypass_typing=False, update_memory=True):
+    if not companion_memory.message_allowed(message):
         return None
     uid = message.author.id
     # Every model call made while writing this reply is tagged with whose
@@ -4053,7 +4063,8 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
 
             if response:
                 # memory upkeep is two more sequential Groq round trips, and neither of them changes the reply that has just been generated; awaiting them here put 1-6 seconds between the reply existing and the user seeing it, so they run alongside the send instead. the trade is that a fact learned this turn may not be in the cache yet if the same person fires another message within a second or two
-                _spawn_memory_update(message, prompt, response)
+                if update_memory:
+                    _spawn_memory_update(message, prompt, response)
 
                 if late_opener:
                     # Opener is injected via system instruction above, no prepend.
@@ -4365,6 +4376,11 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
                         await asyncio.sleep(random.uniform(2, 8) if not bypass_typing else random.uniform(1.0, 2.5))
 
                 async def _send_chunk(chunk=chunk):
+                    if not update_memory and not _server_can_reply(message):
+                        set_reply_state(message.author.id, "skipped", reason="server paused or access changed")
+                        raise asyncio.CancelledError
+                    if _server_chat is not None:
+                        _server_chat.mark_sending(message.channel.id)
                     if isinstance(message.channel, discord.DMChannel):
                         return await message.channel.send(chunk)
                     if message.channel.id in _no_reply_channels:
@@ -4393,6 +4409,9 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
                     asyncio.create_task(_maybe_edit_after_send(sent_msg, chunk))
 
             except discord.Forbidden:
+                if in_server(message.channel):
+                    log_error("Server Reply Error", "Cannot send in this channel; check channel and thread permissions")
+                    return None
                 # 403 on a send means the door is shut: blocked, DMs closed, or no longer friends; that never clears by itself, so the conversation comes off the waiting list instead of being retried on every sweep for ever
                 log_error("Reply Error",
                           f"403 Forbidden - cannot send to {message.author.name}, "
@@ -4575,6 +4594,8 @@ def _cache_author(user) -> None:
 async def on_raw_message_delete(payload):
     """A message deleted on Discord: kept in the chat log, and marked, so the Chats tab shows it with a bin."""
     if payload.guild_id is not None:
+        if _server_chat is not None:
+            _server_chat.delete(payload.channel_id, payload.message_id)
         return
     try:
         uid = _chatlog.mark_deleted(ACCOUNT_INDEX, payload.message_id)
@@ -4588,6 +4609,9 @@ async def on_raw_message_delete(payload):
 async def on_raw_message_edit(payload):
     """A DM message edited: the new words, in the log and in an open chat view."""
     if payload.guild_id is not None:
+        data = getattr(payload, "data", None) or {}
+        if _server_chat is not None and "content" in data:
+            _server_chat.edit(payload.channel_id, payload.message_id, data.get("content") or "")
         return
     data = getattr(payload, "data", None) or {}
     if "content" not in data:
@@ -4641,12 +4665,80 @@ async def on_typing(channel, user, when):
         pass
 
 
+_server_chat = None
+
+
+def _get_server_chat():
+    global _server_chat
+    if _server_chat is None:
+        from app.utils.server_chat import ServerChat
+        _server_chat = ServerChat(
+            self_id=lambda: bot.selfbot_id,
+            get_config=lambda: companion_memory.settings().get("server") or {},
+            respond=_reply_in_server, learn=_learn_in_server, seed=_seed_server_chat,
+            can_reply=_server_can_reply, scheduled=_server_reply_scheduled,
+            report=lambda exc: log_error("Server companion", type(exc).__name__))
+        bot.server_companion = _server_chat
+    return _server_chat
+
+
+def _server_can_reply(message):
+    return (companion_memory.settings().get("enabled", False)
+            and companion_memory.message_allowed(message)
+            and not bot.paused and bot.allow_server
+            and message.author.id not in bot.paused_users
+            and message.author.id not in bot.ignore_users)
+
+
+def _server_reply_scheduled(message, delay):
+    bot.server_waiting[message.channel.id] = message
+    set_reply_state(message.author.id, "waiting", eta=time.time()+delay)
+    emit_chat_event({"t": "msg", "uid": f"ch{message.channel.id}", **server_row(message)})
+
+
+async def _seed_server_chat(first_message):
+    key = history_key(first_message)
+    await seed_history(key, first_message)
+    return [dict(turn) for turn in bot.message_history.get(key, [])]
+
+
+async def _learn_in_server(author, content):
+    # The scheduler gives us only this member's raw statements, never the shared transcript.
+    await _update_memory_after_reply(author, content, "")
+
+
+async def _reply_in_server(message, history, directed):
+    key = history_key(message)
+    bot.message_history[key] = history
+    set_reply_state(message.author.id, "writing")
+    image_url = (message.attachments[0].url if message.attachments
+                 and not (message.flags.value & (1 << 13)) else _extract_image_url_from_message(message))
+    response = await generate_response_and_reply(
+        message, message.content or "[attachment]", history, image_url=image_url, update_memory=False)
+    if response:
+        clear_reply_state(message.author.id)
+        if directed:
+            task = asyncio.create_task(companion_memory.learn_interaction(
+                message.author.id, companion_memory.discord_scope(message), message.id,
+                message.content or ""))
+            _memory_tasks.add(task)
+            task.add_done_callback(_relationship_update_done)
+    else:
+        set_reply_state(message.author.id, "failed", reason="no server reply was delivered")
+    if bot.server_waiting.get(message.channel.id) is message:
+        bot.server_waiting.pop(message.channel.id, None)
+        emit_chat_event({"t": "done", "uid": f"ch{message.channel.id}"})
+    return response
+
+
 @bot.event
 async def on_message(message):
-    if not companion_memory.channel_allowed(message.channel.id):
+    if not companion_memory.message_allowed(message):
         return
     _log_dm(message)
     if message.author.id == bot.selfbot_id:
+        if in_server(message.channel) and _server_can_reply(message) and not message.content.startswith(PREFIX):
+            _get_server_chat().observe(message)
         if isinstance(message.channel, discord.DMChannel):
             _rcp = getattr(message.channel, "recipient", None)
             if _rcp is not None:
@@ -4670,7 +4762,12 @@ async def on_message(message):
         elif in_server(message.channel):
             _w = bot.server_waiting.get(message.channel.id)
             _ref = getattr(getattr(message, "reference", None), "message_id", None)
-            _pending = any(k.endswith(f"-{message.channel.id}") for k in bot.user_message_batches)
+            if (_server_chat is not None and _w is not None
+                    and not _server_chat.is_sending(message.channel.id)
+                    and (_ref is None or _ref == _w.id)):
+                _server_chat.cancel(message.channel.id)
+            _pending = (any(k.endswith(f"-{message.channel.id}") for k in bot.user_message_batches)
+                        or (_server_chat is not None and _server_chat.has_pending(message.channel.id)))
             # the answer to it (a reply to that message), or with nothing else lined up in the channel
             if _w is not None and (_ref == _w.id or not _pending):
                 bot.server_waiting.pop(message.channel.id, None)
@@ -4725,6 +4822,8 @@ async def on_message(message):
             return
 
         user_id = target_msg.author.id
+        if _server_chat is not None and in_server(target_msg.channel):
+            _server_chat.cancel(target_msg.channel.id)
         key = history_key(target_msg)
 
         await seed_history(key, target_msg)
@@ -4792,6 +4891,13 @@ async def on_message(message):
 
     if message.content.startswith(PREFIX) and message.author.id == OWNER_ID:
         await bot.process_commands(message)
+        return
+
+    if in_server(message.channel) and companion_memory.settings().get("enabled", False):
+        if _server_can_reply(message):
+            trigger, _, _ = await is_trigger_message(message)
+            if _get_server_chat().receive(message, directed=trigger):
+                record_user_message(message.author.id, message.author.name, account=ACCOUNT_INDEX)
         return
 
     channel_id = message.channel.id
@@ -5051,6 +5157,9 @@ async def _run_token(token: str, index: int):
             _bad_token(token, index)
         else:
             raise
+    finally:
+        if _server_chat is not None:
+            await _server_chat.close()
 
 
 def run_discord_role(account: int | None = None):

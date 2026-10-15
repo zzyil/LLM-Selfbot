@@ -90,7 +90,10 @@ check("a conversation keeps its newest few hundred", chatlog.count(1, 777) == ch
 
 print("\n== the runner keeps it ==")
 runner = app_src("app/platforms/discord_runner.py")
-check("every DM message goes into the log, both sides", "async def on_message(message):\n    _log_dm(message)" in runner)
+handler = runner[runner.index("async def on_message(message):"):]
+check("allowed DM messages go into the log before filtering either side",
+      handler.index("companion_memory.message_allowed(message)") < handler.index("_log_dm(message)")
+      < handler.index("if message.author.id == bot.selfbot_id:"))
 check("a deleted DM is marked, and the tab told", "async def on_raw_message_delete(payload):" in runner
       and '"t": "deleted"' in runner)
 check("an edit too, but not an embed filling in", "async def on_raw_message_edit(payload):" in runner
