@@ -64,7 +64,7 @@ bot:
     keep_recent: 6
     max_bytes: 32768  # UTF-8 input budget, including the persona text
   character_chat:
-    react_to_prompt_bait: false
+    react_to_prompt_bait: false  # protect character identity from role changes, including delayed reply commands
     bait_replies: []  # optional custom fallbacks; empty uses varied, escalating character reactions
 
   # Agent G companion mode. Opt in via scripts/setup_agent_g.py before first launch.

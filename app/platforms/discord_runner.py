@@ -3574,6 +3574,8 @@ async def _get_user_profile_block(user) -> str:
 
     if not parts:
         return ""
+    if conversation.character_guard_enabled():
+        return conversation.data_context("member display name, status and bio", parts)
     return "\n[About this person: " + ", ".join(parts) + "]"
 
 

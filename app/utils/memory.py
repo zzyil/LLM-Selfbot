@@ -100,6 +100,9 @@ def format_memory_for_prompt(memory: dict) -> str:
     visible = {k: v for k, v in memory.items() if not k.startswith("__")}
     if not visible:
         return ""
+    from app.utils import conversation
+    if conversation.character_guard_enabled():
+        return conversation.data_context("remembered claims about this person", visible)
     lines = "\n".join(f"- {k}: {v}" for k, v in visible.items())
     return (
         f"\nWhat you remember about this person (use it naturally when "
