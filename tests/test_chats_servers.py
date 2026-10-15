@@ -64,7 +64,7 @@ job = runner[runner.index("async def _server_job("):runner.index("async def _ser
 for cmd in ("chat_message", "chat_history", "cancel_reply", "reply_user", "send_message"):
     check(f"{cmd} works on a server row", f'cmd == "{cmd}"' in job)
 check("a Reply there is never to something already answered", "await _answered_since(waiting)" in job)
-check("a message typed there answers theirs, without pinging them", "waiting.reply(text, mention_author=False)" in job)
+check("a message typed there answers theirs, without pinging them", "waiting.reply(" in job and "mention_author=False" in job and "discord.AllowedMentions.none()" in job)
 check("and drops only the reply lined up in that channel", "cancel_pending_reply(waiting.author.id, cid)" in job)
 check("its history says who wrote each message", '"author": {"id": str(a.id)' in job)
 

@@ -101,7 +101,7 @@ _SEARCH_HAS = ("link", "embed", "file", "video", "image", "sound", "sticker")
 # How old a reply request may be when the runner reads it: a little past how long the panel waits for each (two
 # minutes for a Reply, five for Reply to all). Anything older was queued while this account was not running, and
 # whoever asked has given up on it.
-_REPLY_REQUEST_TTL = {"reply_user": 130, "reply_all": 310}
+_REPLY_REQUEST_TTL = {"reply_user": 130, "reply_all": 310, "servers_join": 45}
 
 
 def history_scan_allowed() -> bool:
@@ -1654,12 +1654,20 @@ async def _tg_ipc_loop():
         raw = str((payload or {}).get("user_id") or "")
         return int(raw[2:]) if raw.startswith("ch") and raw[2:].isdigit() else None
 
+    async def _server_access_job(cmd, cmd_id, payload):
+        result = await _get_server_access().handle(cmd, payload)
+        _write_result(cmd_id, result)
+
     async def _server_job(cmd, cmd_id, cid, payload):
         """What a DM row can do, for a server channel: its latest message asking for a reply, its history, a Reply,
         a message typed in the panel, and cancelling the reply lined up."""
         me = getattr(bot, "selfbot_id", None) or bot.user.id
         waiting = bot.server_waiting.get(cid)
         ch = bot.get_channel(cid) or (waiting.channel if waiting is not None else None)
+        try:
+            ch, _permissions = _get_server_access().channel(cid)
+        except ValueError:
+            ch = None
         if ch is None:
             _write_result(cmd_id, {"ok": False, "success": False, "dropped": True,
                                    "reason": "that channel is not available to this account any more"})
@@ -1676,7 +1684,7 @@ async def _tg_ipc_loop():
             if not _manual_history_budget.allow():
                 _write_result(cmd_id, {"ok": False, "reason": "Discord limits how often history can be read; try again in a minute"})
                 return
-            limit = max(5, min(40, int(payload.get("limit") or 20)))
+            limit = max(5, min(100, int(payload.get("limit") or 20)))
             out = []
             async for m in ch.history(limit=limit):
                 if m.type not in (discord.MessageType.default, discord.MessageType.reply):
@@ -1733,19 +1741,31 @@ async def _tg_ipc_loop():
             await _react_on(ch, cmd_id, payload)
         elif cmd == "send_message":
             text = str(payload.get("text") or "").strip()
-            if not text or len(text) > 2000:
+            files, why_files = _decode_files(payload.get("files"))
+            if why_files:
+                _write_result(cmd_id, {"ok": False, "reason": why_files})
+                return
+            if (not text and not files) or len(text) > 2000:
                 _write_result(cmd_id, {"ok": False, "reason": "nothing to send" if not text else "Discord takes up to 2000 characters in one message"})
                 return
+            permissions = ch.permissions_for(ch.guild.me)
+            can_send = permissions.send_messages_in_threads if isinstance(ch, discord.Thread) else permissions.send_messages
+            if not can_send or getattr(ch.guild.me, "pending", False):
+                _write_result(cmd_id, {"ok": False, "reason": "This account cannot send here. Check permissions and server verification in Discord."})
+                return
             dropped = waiting is not None and cancel_pending_reply(waiting.author.id, cid)
+            if _server_chat is not None:
+                _server_chat.cancel(cid)
             async with bot.global_send_lock:
                 # an answer to what was waiting, so it reads as one in the channel, without pinging them
-                sent = await (waiting.reply(text, mention_author=False) if waiting is not None else ch.send(text))
+                kw = {"files": _as_discord_files(files) or None, "allowed_mentions": discord.AllowedMentions.none()}
+                sent = await (waiting.reply(text or None, mention_author=False, **kw) if waiting is not None else ch.send(text or None, **kw))
             bot.last_global_send = time.time()
             bot.message_history.setdefault(f"ch-{cid}", []).append({"role": "assistant", "content": text})
             bot.server_waiting.pop(cid, None)
             emit_chat_event({"t": "sent", "uid": f"ch{cid}", "ts": sent.created_at.timestamp(), **_message_payload(sent)})
             emit_chat_event({"t": "done", "uid": f"ch{cid}"})
-            _write_result(cmd_id, {"ok": True, "mid": str(sent.id), "ts": sent.created_at.timestamp(), "dropped_reply": dropped})
+            _write_result(cmd_id, {"ok": True, "mid": str(sent.id), "ts": sent.created_at.timestamp(), "dropped_reply": dropped, **_message_payload(sent)})
 
     async def _server_job_safe(cmd, cmd_id, cid, payload):
         if cmd == "reply_user":
@@ -1871,6 +1891,12 @@ async def _tg_ipc_loop():
 
     async def _dm_for(cmd_id, payload):
         """The DM with the person a Chats request is about, or None after answering why not."""
+        if _server_id(payload) is not None:
+            try:
+                return _get_server_access().channel(_server_id(payload))[0]
+            except ValueError as exc:
+                _write_result(cmd_id, {"ok": False, "reason": str(exc)})
+                return None
         u, _why = await resolve_user(int(payload["user_id"]))
         if not u:
             _write_result(cmd_id, {"ok": False, "reason": _why or "user not found"})
@@ -1882,7 +1908,11 @@ async def _tg_ipc_loop():
             return None
 
     def _found(m, me) -> dict:
-        return {"mine": m.author.id == me, "ts": m.created_at.timestamp(), **_message_payload(m)}
+        a = m.author
+        return {"mine": a.id == me, "ts": m.created_at.timestamp(),
+                "author": {"id": str(a.id), "name": getattr(a, "display_name", None) or a.name,
+                           "avatar": str(a.display_avatar.url) if getattr(a, "display_avatar", None) else ""},
+                **_message_payload(m)}
 
     async def _search_job(cmd_id, payload):
         """Discord's own search over a DM, for the Chats tab: everything ever said in it, not only what is kept here.
@@ -1892,7 +1922,7 @@ async def _tg_ipc_loop():
         the conversation up to now, and odd old messages in it would break that.
         """
         try:
-            uid = int(payload["user_id"])
+            uid = _server_id(payload) or int(payload["user_id"])
             if not _search_budget.allow():
                 _write_result(cmd_id, {"ok": False, "reason": "Discord limits how often you can search; try again in a minute"})
                 return
@@ -1905,6 +1935,9 @@ async def _tg_ipc_loop():
             if words:
                 kw["content"] = words[:500]
             if payload.get("mine") is not None:
+                if _server_id(payload) is not None and not payload["mine"]:
+                    _write_result(cmd_id, {"ok": False, "reason": "Search all members or your own messages in a server."})
+                    return
                 kw["authors"] = [discord.Object(id=me if payload["mine"] else uid)]
             has = [h for h in payload.get("has") or [] if h in _SEARCH_HAS]
             if has:
@@ -2186,8 +2219,10 @@ async def _tg_ipc_loop():
                 _write_result(cmd_id, {"success": False, "reason": "expired: it was asked for before the account restarted"})
                 continue
             try:
+                if cmd in {"servers_list", "servers_channels", "servers_invite", "servers_join", "servers_watch"}:
+                    asyncio.create_task(_server_access_job(cmd, cmd_id, payload))
                 # a server conversation's row, "ch<channel id>": first, before the same commands for a person's DM
-                if cmd in ("chat_message", "chat_history", "cancel_reply", "reply_user", "send_message", "react") \
+                elif cmd in ("chat_message", "chat_history", "cancel_reply", "reply_user", "send_message", "react") \
                         and _server_id(payload) is not None:
                     asyncio.create_task(_server_job_safe(cmd, cmd_id, _server_id(payload), payload))
 
@@ -4668,6 +4703,8 @@ async def on_raw_message_delete(payload):
         await asyncio.to_thread(lingo.forget_source, payload.message_id)
         if _server_chat is not None:
             _server_chat.delete(payload.channel_id, payload.message_id)
+        if (panel := getattr(bot, "panel_server_access", None)) is not None and panel.watches(payload.channel_id):
+            emit_chat_event({"t": "deleted", "uid": f"ch{payload.channel_id}", "mid": str(payload.message_id), "at": time.time()})
         return
     try:
         uid = _chatlog.mark_deleted(ACCOUNT_INDEX, payload.message_id)
@@ -4689,6 +4726,9 @@ async def on_raw_message_edit(payload):
             await asyncio.to_thread(lingo.forget_source, payload.message_id)
         if _server_chat is not None and "content" in data:
             _server_chat.edit(payload.channel_id, payload.message_id, data.get("content") or "")
+        if "content" in data and (panel := getattr(bot, "panel_server_access", None)) is not None and panel.watches(payload.channel_id):
+            emit_chat_event({"t": "edited", "uid": f"ch{payload.channel_id}", "mid": str(payload.message_id),
+                             "text": data.get("content") or "", "at": time.time()})
         return
     data = getattr(payload, "data", None) or {}
     if "content" not in data:
@@ -4706,6 +4746,11 @@ async def _reaction_changed(payload, delta: int):
     """A reaction on a DM message, added (1) or taken back (-1), by them, by the account from the Chats tab, or by
     the account from Discord itself: the kept message's reactions follow, and an open chat view with them."""
     if payload.guild_id is not None:
+        if (panel := getattr(bot, "panel_server_access", None)) is not None and panel.watches(payload.channel_id):
+            message = next((m for m in bot.cached_messages if m.id == payload.message_id), None)
+            if message is not None:
+                emit_chat_event({"t": "reactions", "uid": f"ch{payload.channel_id}", "mid": str(payload.message_id),
+                                 "reactions": _message_payload(message).get("reactions", [])})
         return
     try:
         me = getattr(bot, "selfbot_id", None) or bot.user.id
@@ -4743,6 +4788,16 @@ async def on_typing(channel, user, when):
 
 
 _server_chat = None
+_server_access = None
+
+
+def _get_server_access():
+    global _server_access
+    if _server_access is None:
+        from app.utils.discord_servers import ServerAccess
+        _server_access = ServerAccess(bot)
+        bot.panel_server_access = _server_access
+    return _server_access
 
 
 def _get_server_chat():
@@ -4832,6 +4887,14 @@ async def _reply_in_server(message, history, directed):
 
 @bot.event
 async def on_message(message):
+    # Watching a channel in the owner UI is separate from choosing which chats the AI answers.
+    if getattr(message, "guild", None) is not None and (panel := getattr(bot, "panel_server_access", None)) is not None and panel.watches(message.channel.id):
+        a = message.author
+        emit_chat_event({"t": "channel_msg", "uid": f"ch{message.channel.id}",
+                         "mine": a.id == bot.selfbot_id, "ts": message.created_at.timestamp(),
+                         "author": {"id": str(a.id), "name": getattr(a, "display_name", None) or a.name,
+                                    "avatar": str(a.display_avatar.url) if getattr(a, "display_avatar", None) else ""},
+                         **_message_payload(message)})
     if not companion_memory.message_allowed(message):
         return
     _log_dm(message)

@@ -1,8 +1,10 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { api } from "../api";
   import { viewPersona } from "../stores";
   import { visiblePoll } from "../poll";
   import { serverMemories, memorySection } from "../server-memory";
+  import { serversFocus } from "../chats";
   import PersonaScope from "../personas/PersonaScope.svelte";
   import Icon from "./Icon.svelte";
   const memories = $derived(serverMemories($viewPersona || "default"));
@@ -13,6 +15,13 @@
   const channels = $derived(new Set(servers.flatMap((s) => s.channels.map((c) => c.channel_id))).size);
   $effect(() => { memories.refresh({ maxAge: 10000 }); });
   onMount(() => visiblePoll(() => memories.refresh({ force: true, quiet: true }), 15000));
+  async function browse() {
+    try {
+      const accounts = (await api.accounts()).accounts || [];
+      serversFocus.set(accounts.find((a: any) => a.platform === "discord" && a.persona === ($viewPersona || "default"))?.id || "");
+    } catch { serversFocus.set(""); }
+    window.location.hash = "/servers";
+  }
   function open() {
     memorySection.set("servers");
     window.location.hash = "/memory";
@@ -30,7 +39,7 @@
     <span><b>{channels}</b> observed channels</span>
     {#if disputes}<span class="text-warn"><b>{disputes}</b> disputed</span>{/if}
   </div>
-  <div class="server-controls"><PersonaScope value={$viewPersona || "default"} onchange={(pid) => viewPersona.set(pid)} /><button class="jelly server-open" onclick={open}>Manage memories <Icon name="chevron" size={12} /></button></div>
+  <div class="server-controls"><PersonaScope value={$viewPersona || "default"} onchange={(pid) => viewPersona.set(pid)} /><button class="jelly server-open" onclick={browse}>Open servers <Icon name="globe" size={12} /></button><button class="jelly server-open" onclick={open}>Manage memories <Icon name="chevron" size={12} /></button></div>
   {#if $memories.data.unavailable_accounts}<p class="server-note">Live activity unavailable for {$memories.data.unavailable_accounts} account(s). Saved terms are still shown.</p>{/if}
 </section>
 

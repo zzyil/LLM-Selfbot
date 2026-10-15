@@ -44,6 +44,8 @@ export type ChatUser = {
    * `author_id` who is asking in it, `where` "#channel · Server".
    */
   kind?: "server";
+  can_send?: boolean;
+  channel_reason?: string;
   channel_id?: string;
   author_id?: string;
   where?: string;
@@ -94,6 +96,7 @@ export const chatAccounts = writable<ChatAccount[]>([]);
  * card. Chats picks it up when it opens and clears it.
  */
 export const chatsFocus = writable<string>("");
+export const serversFocus = writable<string>("");
 
 /**
  * Set while a reply is being sent.
@@ -349,7 +352,7 @@ export function refreshChats(
 /** The last few events per account, so a refresh in flight can replay them. */
 const recent = new Map<string, { at: number; evt: ChatEvent }[]>();
 
-const MSG_KEYS = ["text", "mid", "attachments", "stickers", "embeds"] as const;
+const MSG_KEYS = ["text", "mid", "attachments", "stickers", "embeds", "author", "reactions"] as const;
 
 /**
  * One event applied to a waiting list, returning a new list. Mirrors
@@ -789,14 +792,14 @@ function appendToConversation(target: string, evt: ChatEvent) {
     }));
     return;
   }
-  if (evt.t !== "msg" && evt.t !== "sent") return;
+  if (evt.t !== "msg" && evt.t !== "sent" && evt.t !== "channel_msg") return;
   if (evt.mid && cur.messages.some((m) => m.mid === evt.mid)) return;
-  const msg: ConvMessage = { mine: evt.t === "sent", ts: evt.ts || Date.now() / 1000 };
+  const msg: ConvMessage = { mine: evt.t === "sent" || (evt.t === "channel_msg" && !!evt.mine), ts: evt.ts || Date.now() / 1000 };
   for (const f of MSG_KEYS) if (f in evt) (msg as any)[f] = evt[f];
   conversations.update((c) => ({ ...c, [k]: { ...cur, messages: [...cur.messages, msg].slice(-KEEP_DRAWN) } }));
 }
 
-function applyEvent(evt: ChatEvent) {
+export function applyEvent(evt: ChatEvent) {
   const target = evt.target;
   if (!target) return;
   const log = recent.get(target) ?? [];

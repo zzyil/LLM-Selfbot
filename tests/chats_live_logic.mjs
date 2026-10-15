@@ -164,5 +164,26 @@ check("an event for someone not listed changes nothing", u === base);
   api.chatsReact = real;
 }
 
+// Passive server traffic updates an open channel without creating an AI reply request.
+{
+  const chats = await import("../webui/src/lib/chats.ts");
+  const get = (store) => { let value; store.subscribe((v) => (value = v))(); return value; };
+  const target = "discord_1", uid = "ch987654321098765432", key = chats.convKey(target, uid);
+  chats.chatCache.set({ [target]: { users: [], fetched: 1, loading: false, error: "" } });
+  chats.conversations.set({ [key]: { messages: [], loading: false, error: "", at: 1 } });
+  const event = { t: "channel_msg", target, uid, mid: "1234567890123456789", text: "hello community", ts: 2,
+                  mine: false, author: { id: "42", name: "Member" }, reactions: [{ name: "🔥", count: 1, mine: false }] };
+  chats.applyEvent(event);
+  let conversation = get(chats.conversations)[key];
+  check("passive server traffic keeps its speaker, snowflake and reactions",
+        conversation.messages[0].author?.name === "Member" && conversation.messages[0].mid === event.mid
+        && conversation.messages[0].reactions[0].name === "🔥");
+  check("observing a server channel does not put members on the waiting list", get(chats.chatCache)[target].users.length === 0);
+  chats.applyEvent({ ...event, t: "msg", name: "Member" });
+  check("a scheduled reply event does not duplicate a passively observed message", get(chats.conversations)[key].messages.length === 1);
+  chats.applyEvent({ ...event, mid: "1234567890123456790", mine: true });
+  check("the account's native server messages remain on its own side", get(chats.conversations)[key].messages[1].mine === true);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

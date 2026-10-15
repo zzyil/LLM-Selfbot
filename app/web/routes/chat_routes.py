@@ -641,7 +641,12 @@ async def chat_around(request: Request):
     messages kept here put back in; from what is kept when it is stopped, and always for Snapchat."""
     from app.utils import chatlog
     body = await request.json()
-    tgt, uid, acct = _dm_of(request, body)
+    server_channel = _server_row_id(body.get("user_id"))
+    if server_channel:
+        tgt = _resolve_target(request, body.get("target", ""))
+        uid, acct = str(body["user_id"]), None
+    else:
+        tgt, uid, acct = _dm_of(request, body)
     direction = body.get("dir") or "around"
     if direction not in ("around", "older", "newer", "first"):
         raise HTTPException(status_code=400, detail="dir is around, older, newer or first")
@@ -655,15 +660,21 @@ async def chat_around(request: Request):
         return {"ok": True, "messages": found or [], "more": len(found or []) >= limit, "from_log": True,
                 "missing": found is None}
 
+    if server_channel and direction != "first" and not mid.isdigit():
+        raise HTTPException(status_code=400, detail="A numeric message ID is required.")
     if _is_snap(tgt) or (direction != "first" and not mid.isdigit()):
         return await kept()
     result = await ipc.send_and_wait(tgt, "chat_window", {"user_id": uid, "mid": mid or None, "dir": direction,
                                                           "limit": limit}, timeout=25.0)
     if result is None:
+        if server_channel:
+            raise HTTPException(status_code=504, detail="The account must be connected to read server history.")
         return {**(await kept()), "offline": True}
     if not result.get("ok"):
         raise HTTPException(status_code=502, detail=result.get("reason") or "could not read it")
     found = result.get("messages") or []
+    if server_channel:
+        return result
     if found:
         # Deleted on Discord, so it no longer has them; kept here, so they are shown where they were.
         have = {m.get("mid") for m in found}
@@ -1186,3 +1197,77 @@ async def server_memories(request: Request, persona: str = ""):
                          "participation": bool(companion.get("enabled") or participation.get("enabled")),
                          "ambient_probability": participation.get("ambient_reply_probability", 0),
                          "activity_window_seconds": participation.get("ambient_window_seconds", 600)}}
+
+
+# Server navigation uses only the selected Discord account's authenticated runner.
+def _server_target(request, explicit):
+    from app.web import live
+    targets = ipc.discover_targets()
+    web_id = str(explicit or next((key for key, value in targets.items() if value["platform"] == "discord"), ""))
+    meta = targets.get(web_id)
+    if not meta or meta["platform"] != "discord":
+        raise HTTPException(status_code=400, detail="Select a configured Discord account.")
+    if web_id not in live.running_accounts(request):
+        raise HTTPException(status_code=503, detail="Start this Discord account before opening its servers.")
+    return meta["target"]
+
+
+async def _server_action(request, target, command, payload=None):
+    result = await ipc.send_and_wait(_server_target(request, target), command, payload or {},
+                                     timeout=40 if command == "servers_join" else 15)
+    if result is None:
+        detail = ("The join result is not confirmed. Refresh servers before trying again."
+                  if command == "servers_join" else "This account did not answer. Check that it is connected.")
+        raise HTTPException(status_code=504, detail=detail)
+    return result
+
+
+@router.get("/api/servers")
+async def servers_list(request: Request, target: str = ""):
+    from app.utils import personas
+    resolved = _server_target(request, target)
+    result = await _server_action(request, target, "servers_list")
+    return {**result, "persona": personas.persona_of(f"discord_{resolved}")}
+
+
+@router.get("/api/servers/{guild_id}/channels")
+async def server_channels(request: Request, guild_id: str, target: str = ""):
+    from app.utils.discord_servers import snowflake
+    try:
+        guild = str(snowflake(guild_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return await _server_action(request, target, "servers_channels", {"guild_id": guild})
+
+
+@router.post("/api/servers/invite")
+async def server_invite(request: Request):
+    from app.utils.discord_servers import invite_code
+    body = await request.json()
+    try:
+        code = invite_code(body.get("invite"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return await _server_action(request, body.get("target"), "servers_invite", {"invite": code})
+
+
+@router.post("/api/servers/join")
+async def server_join(request: Request):
+    from app.utils.discord_servers import invite_code, snowflake
+    body = await request.json()
+    try:
+        code, guild = invite_code(body.get("invite")), str(snowflake(body.get("guild_id")))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return await _server_action(request, body.get("target"), "servers_join", {"invite": code, "guild_id": guild})
+
+
+@router.post("/api/servers/watch")
+async def server_watch(request: Request):
+    from app.utils.discord_servers import snowflake
+    body = await request.json()
+    try:
+        channel = str(snowflake(body.get("channel_id")))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return await _server_action(request, body.get("target"), "servers_watch", {"channel_id": channel})

@@ -232,6 +232,11 @@ export const api = {
     const s = q.toString();
     return request(`/api/chats${s ? `?${s}` : ""}`);
   },
+  servers: (target: string) => request(`/api/servers?target=${encodeURIComponent(target)}`),
+  serverChannels: (guild: string, target: string) => request(`/api/servers/${encodeURIComponent(guild)}/channels?target=${encodeURIComponent(target)}`),
+  serverInvite: (invite: string, target: string) => request("/api/servers/invite", { method: "POST", body: JSON.stringify({ invite, target }) }),
+  serverJoin: (invite: string, guild_id: string, target: string) => request("/api/servers/join", { method: "POST", body: JSON.stringify({ invite, guild_id, target }) }),
+  serverWatch: (channel_id: string, target: string) => request("/api/servers/watch", { method: "POST", body: JSON.stringify({ channel_id, target }) }),
   reply: (user_id: any, target = "") =>
     request("/api/chats/reply", { method: "POST", body: JSON.stringify({ user_id, target }) }),
   replyAll: (target = "") =>

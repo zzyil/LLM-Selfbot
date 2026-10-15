@@ -34,6 +34,8 @@
     reactTo, SNAP_REACTIONS,
     type ChatUser, type ConvMessage, type StagedFile, type Reaction,
   } from "../lib/chats";
+  import ServerBrowser from "../lib/components/ServerBrowser.svelte";
+  import { serversFocus } from "../lib/chats";
   import ReactPicker from "../lib/components/ReactPicker.svelte";
   import { fold, highlighted, splitWords } from "../lib/chatsearch";
   import { discordInline } from "../lib/discordmd";
@@ -59,6 +61,7 @@
     state?: string;
   };
 
+  let { mode = "inbox" }: { mode?: "inbox" | "servers" } = $props();
   let target = $state("");
   let loadError = $state("");
 
@@ -108,10 +111,10 @@
   const allProgress = $derived($replyAllProgress[target]);
   const busy = $derived(replyingAll);
 
-  const accounts = $derived($chatAccounts);
+  const accounts = $derived(mode === "servers" ? $chatAccounts.filter((a) => a.platform === "discord") : $chatAccounts);
   const entry = $derived($chatCache[target] ?? { users: [], fetched: 0, loading: false, error: "" });
   const users = $derived(entry.users);
-  const loading = $derived(!accounts.length || (!entry.fetched && entry.loading));
+  const loading = $derived(mode === "servers" ? false : !accounts.length || (!entry.fetched && entry.loading));
   const refreshing = $derived(entry.loading && entry.fetched > 0);
   const current = $derived(accounts.find((a) => a.id === target));
   const unread = $derived(users.reduce((n, u) => n + (u.count || 0), 0));
@@ -142,10 +145,11 @@
 
   async function start() {
     try {
-      const list = accounts.length ? accounts : await loadChatAccounts();
-      const want = get(chatsFocus);
+      const loaded = accounts.length ? accounts : await loadChatAccounts();
+      const list = mode === "servers" ? loaded.filter((a) => a.platform === "discord") : loaded;
+      const want = get(mode === "servers" ? serversFocus : chatsFocus);
       if (want) {
-        chatsFocus.set("");
+        (mode === "servers" ? serversFocus : chatsFocus).set("");
         if (list.some((a) => a.id === want)) target = want;
       }
       if (list.length && !target) target = list[0].id;
@@ -159,7 +163,7 @@
   }
 
   async function loadFriends() {
-    if (!target) return;
+    if (!target || mode === "servers") return;
     friendsLoading = true;
     try {
       const data = await api.friends(target);
@@ -351,18 +355,34 @@
 
   $effect(() => {
     const u = users.find((x) => x.id === selectedId);
-    if (u) snapshot = { ...u };
+    if (u && mode !== "servers") snapshot = { ...u };
   });
   // Nothing open yet: open the first one, so the right side is never empty.
   $effect(() => {
-    if (!selectedId && flat.length) selectedId = flat[0].id;
+    if (mode !== "servers" && !selectedId && flat.length) selectedId = flat[0].id;
   });
 
   const selected = $derived<Person | null>(
-    users.find((u) => u.id === selectedId) ?? (snapshot?.id === selectedId ? snapshot : null),
+    mode === "servers" && snapshot?.id === selectedId
+      ? { ...users.find((u) => u.id === selectedId), ...snapshot,
+          archived: !users.some((u) => u.id === selectedId),
+          state: users.find((u) => u.id === selectedId)?.state,
+          author_id: users.find((u) => u.id === selectedId)?.author_id }
+      : users.find((u) => u.id === selectedId) ?? (snapshot?.id === selectedId ? snapshot : null),
   );
   const answered = $derived(!!selected && !users.some((u) => u.id === selected.id));
   const st = $derived(selected && !answered ? statusOf(selected) : null);
+
+  function clearServerSelection() {
+    selectedId = ""; snapshot = null; showDetail = false; older = null;
+  }
+
+  function selectServer(channel: ChatUser) {
+    snapshot = { ...channel, archived: true };
+    void loadConversation(target, channel.id, true);
+    selectedId = channel.id;
+    showDetail = true;
+  }
 
   function select(id: string) {
     selectedId = id;
@@ -515,7 +535,7 @@
   async function sendDraft() {
     const who = selected;
     const k = draftKey;
-    if (!who || !k || sendingOwn) return;
+    if (!who || !k || sendingOwn || who.can_send === false) return;
     const text = ($drafts[k] ?? "").trim();
     const files = get(stagedFiles)[k] ?? [];
     if (!text && !files.length) return;
@@ -1367,7 +1387,7 @@
     {/if}
   </div>
 
-  {#if !loading && users.length}
+  {#if mode !== "servers" && !loading && users.length}
     <div class="ch-stats">
       <span class="ch-stat"><b>{users.filter((u) => !u.ignored).length}</b> waiting</span>
       {#if unread}<span class="ch-stat"><b>{unread}</b> unread</span>{/if}
@@ -1416,7 +1436,7 @@
     <span class="ch-livebadge" title="New messages and every step of a reply show up here as they happen">
       <i class:is-busy={refreshing}></i>{refreshing ? "Checking" : "Live"}
     </span>
-    <Button kind={replyingAll ? "ghost" : "good"} onclick={replyAll}
+    {#if mode !== "servers"}<Button kind={replyingAll ? "ghost" : "good"} onclick={replyAll}
             disabled={(!replyingAll && users.length === 0) || !!allProgress?.stopping} loading={!!allProgress?.stopping}>
       {#if allProgress?.stopping}
         Stopping
@@ -1427,12 +1447,12 @@
       {:else}
         <Icon name="chats" size={13} />Reply to all
       {/if}
-    </Button>
+    </Button>{/if}
   </div>
 </div>
 
 <!-- ── Friend requests: a strip, not a block ──────────────────────────────── -->
-{#if incoming.length || (friendsError && friendsSupported)}
+{#if mode !== "servers" && (incoming.length || (friendsError && friendsSupported))}
   <div class="ch-friends" class:narrow-hide={showDetail && !!selected}>
     <span class="ch-friends-label">
       <Icon name="accounts" size={13} />Friend requests
@@ -1473,7 +1493,7 @@
     </div>
     <div class="ch-detail glass"><div class="m-5 h-40 animate-pulse rounded-2xl bg-white/[0.03]"></div></div>
   </div>
-{:else if !users.length && !selected}
+{:else if mode !== "servers" && !users.length && !selected}
   <!-- ── Inbox zero ─────────────────────────────────────────────────────── -->
   <div class="ch-zero glass" class:is-compact={archived.length > 0}>
     <span class="ch-zero-mark" use:chime={"done"}><Icon name="check" size={26} /></span>
@@ -1561,6 +1581,9 @@
   <div class="ch-inbox" class:show-detail={showDetail} use:fillHeight>
     <!-- ── Who is waiting ───────────────────────────────────────────────── -->
     <div class="ch-left">
+      {#if mode === "servers"}
+        <ServerBrowser {target} {selectedId} onselect={selectServer} onclear={clearServerSelection} />
+      {:else}
       <!-- Find someone, or something someone said: names as you type, and the words of every kept message. Above the
            list rather than in it, so the list scrolls under nothing. -->
       <div class="ch-find">
@@ -1702,6 +1725,7 @@
         </div>
       {/if}
       </div>
+      {/if}
     </div>
 
     <!-- ── The conversation ─────────────────────────────────────────────── -->
@@ -1718,12 +1742,12 @@
           </span>
           <div class="min-w-0 flex-1">
             <div class="flex min-w-0 items-center gap-2">
-              <UserChip id={selected.id} name={selected.name} size="md" />
+              {#if mode === "servers"}<b class="text-[14px] font-semibold">{selected.where || selected.name}</b>{:else}<UserChip id={selected.id} name={selected.name} size="md" />{/if}
               {#if selected.count > 1 && !answered}<span class="cd-unread">{selected.count} unread</span>{/if}
             </div>
             <div class="truncate text-[11.5px] text-faint">
               {#if selected.username && selected.username !== selected.name}<span class="selectable">@{selected.username}</span> · {/if}
-              {selected.kind === "server" && selected.where ? `${selected.where} · ` : ""}{selected.archived ? "answered" : `last message ${ago(selected.ts) === "now" ? "just now" : `${ago(selected.ts)} ago`}`}
+              {mode !== "servers" && selected.kind === "server" && selected.where ? `${selected.where} · ` : ""}{selected.archived ? (mode === "servers" ? "server channel" : "answered") : `last message ${ago(selected.ts) === "now" ? "just now" : `${ago(selected.ts)} ago`}`}
               {#if selected.ts} · {at(selected.ts)}{/if}
             </div>
           </div>
@@ -1753,7 +1777,7 @@
               </button>
             </div>
           {/if}
-          {#if !selected.archived}
+          {#if mode !== "servers" && !selected.archived && (selected.kind !== "server" || selected.author_id)}
             <button class="cd-toggle" class:is-off={selected.ignored} onclick={() => flipIgnore(selected!)}
                     disabled={!!rowBusy[selected.id]}
                     title={selected.ignored ? "Let the bot answer them again" : "Stop the bot answering this person at all"}>
@@ -1767,7 +1791,7 @@
         <div class="cd-main">
         <!-- Where the reply is. The tracker when the bot has it in hand, a
              callout when it needs you, a tick once it is answered. -->
-        {#if answered}
+        {#if answered && mode !== "servers"}
           <div class="cd-strip is-done" title={selected.archived ? "Nothing is waiting in this conversation" : "The reply went out"}>
             <span class="cd-strip-mark"><Icon name="check" size={11} /></span>
             <span class="cd-strip-text"><b>{selected.archived ? "Answered" : "Answered just now"}</b>
@@ -1945,7 +1969,8 @@
             {/if}
           </footer>
         {/if}
-        {#if selected}
+        {#if selected?.can_send === false}<p class="px-5 py-3 text-[12px] text-muted">{selected.channel_reason || "This channel is read-only for this account."}</p>{/if}
+        {#if selected && selected.can_send !== false}
           <!-- Write to them yourself, as the account. A reply the bot had lined up is dropped when you do. -->
           <form class="cd-compose" onsubmit={(e) => { e.preventDefault(); sendDraft(); }}>
             {#if stagedHere.length}
@@ -2020,7 +2045,7 @@
       {:else}
         <div class="flex h-full flex-col items-center justify-center gap-2 p-10 text-center">
           <span class="text-faint"><Icon name="chats" size={26} /></span>
-          <p class="text-[12.5px] text-muted">Pick a conversation on the left.</p>
+          <p class="text-[12.5px] text-muted">{mode === "servers" ? "Choose a server and text channel on the left, or join a server with an invite." : "Pick a conversation on the left."}</p>
         </div>
       {/if}
     </section>

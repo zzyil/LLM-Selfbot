@@ -90,6 +90,32 @@ fail locally; they aren't sent to another provider. An unset chat model stays
 unconfigured. The app still connects to Discord and retains upstream networking
 features such as updates; this option controls inference providers.
 
+## Joining and using servers in the dashboard
+
+Open **Servers** from the sidebar, or **Open servers** on the Dashboard. Choose the
+Discord account at the top. **Join server** accepts a Discord invite link or code,
+previews the community, then joins only when **Join this server** is pressed. Friend,
+group DM and guest voice invites are rejected. The character does not discover or
+accept invitations on its own. Joining retains the account's current persona and memory.
+
+The server picker lists that account's joined communities. Browse text channels by
+category and accessible active threads, read recent messages, scroll back, send text
+or supported attachments, and react with the existing chat controls. Switching servers
+clears the open channel so the composer cannot silently send to the previous community.
+Read-only channels show their messages with the composer hidden. Visibility, history,
+private-thread membership and send permissions are checked against the selected account.
+
+An open channel receives live message, edit, deletion and cached reaction updates without
+putting every observed message in the AI reply queue. A short watch expires after the
+interface stops renewing it. Owner messages suppress automatic mentions and cancel a
+pending AI response in that channel. AI participation continues to use its existing
+server access and persona settings.
+
+Discord may require a CAPTCHA or server verification; complete those in Discord itself,
+then refresh. This UI does not automate verification, server rules acceptance or voice.
+An uncertain join response asks for a server refresh before retrying. Short-lived duplicate
+join suppression and command expiry prevent repeated clicks or stale queued joins.
+
 ## Community vocabulary
 
 Enable `bot.server_lingo.enabled` to learn local word meanings from new accepted
