@@ -150,6 +150,7 @@ DESCRIPTIONS = {
     "bot.night_invisible.status": "Which presence to show during the night window. Invisible is not offline: it still replies.",
     "bot.night_invisible.timezone": "Timezone the night hours are measured in.",
     "bot.message_style.mode": "How long its replies are.",
+    "bot.character_chat.social_awareness": "Use the character and recent conversation to interpret teasing, false claims, unfamiliar slang and apologies.",
     "bot.message_style.max_chunk_chars": "Longest one message may be before it is split.",
     "bot.reactions.enabled": "React with an emoji when the conversation calls for it.",
     "bot.reactions.chance": "How often it actually reacts when the AI wants to.",

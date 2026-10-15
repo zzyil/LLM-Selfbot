@@ -92,6 +92,29 @@ features such as updates; this option controls inference providers.
 
 ## Character reactions and context
 
+Enable `bot.character_chat.social_awareness` for a separate semantic assessment
+before a normal text or image reply. The background model reads the local character
+document as data and compares the latest message with recent conversation: false
+personal claims, unsupported premises, insults, genuine misunderstandings, true
+flaws, quotes, apologies, automation questions and real distress. It can interpret
+unfamiliar slang and paraphrases without adding trigger words. Validated enum
+labels, literal message evidence and evidence of earlier related digs guide a
+short reaction in the character's voice. Unsupported allegations are omitted from
+reaction generation so they do not become invented job or life stories. Repetition
+requires a quote from an earlier member turn, not the current message or an
+assistant reply. Newly recognized role pressure is quarantined in later context.
+
+The character's temperament sets the response: a thin-skinned persona may take
+offense, become defensive and escalate across repeated digs, while keeping the
+same identity. Public-channel brevity hints do not suppress its temperament.
+Disagreement never authorizes private disclosure. Ordinary conversation, apologies
+and remarks about other people continue through the normal reply path. Failed or
+unusable assessment leaves normal conversation available; failed short reaction
+generation uses a public-safe fallback. This adds a background model call and may
+increase latency. In local-only mode both assessment and reply remain local.
+Interpretation still depends on model ability and context; unfamiliar wording is
+not guaranteed to be classified correctly.
+
 For a character that reacts socially to requests to change its role or ignore its persona,
 enable `bot.character_chat.react_to_prompt_bait`. The model writes a short reaction
 in the selected persona's voice, with irritation increasing when the recent

@@ -28,6 +28,57 @@ def turns(count):
 
 
 class CharacterConversation(unittest.IsolatedAsyncioTestCase):
+    def test_social_interpretation_is_opt_in_and_uses_the_selected_character(self):
+        cfg = config()
+        base = "Different character, age 41, calm temperament."
+        self.assertEqual(conversation.social_instructions(base, cfg), base)
+        cfg["bot"]["character_chat"]["social_awareness"] = True
+        messages = conversation.model_messages(base, [{"role": "user", "content": "okay unc"}], cfg)
+        self.assertTrue(messages[0]["content"].startswith(base))
+        self.assertIn("SOCIAL INTERPRETATION", messages[0]["content"])
+        self.assertEqual(messages[-1]["content"], "okay unc")
+        self.assertNotIn("Sunshine", messages[0]["content"])
+        self.assertIn("No earlier member messages", messages[0]["content"])
+        history = [{"role": "user", "content": "okay unc"},
+                   {"role": "assistant", "content": "what?? i'm 23"},
+                   {"role": "user", "content": "okay grandpa"}]
+        self.assertNotIn("No earlier member messages", conversation.model_messages(base, history, cfg)[0]["content"])
+
+    async def test_novel_social_messages_remain_available_when_assessment_is_unusable(self):
+        from app.utils import ai
+        cfg = config()
+        cfg["bot"]["character_chat"]["social_awareness"] = True
+        response = types.SimpleNamespace(choices=[types.SimpleNamespace(message=types.SimpleNamespace(
+            content="what the fuck is that supposed to mean"))])
+        cases = ("okay unc", "your first console was a stone tablet", "retirement-home wifi energy",
+                 "my uncle turned 60", "you were fired from your electrician job", "sorry, my bad")
+        with patch.object(conversation, "_config", return_value=cfg), patch.object(ai, "_initialised", True), \
+                patch.object(ai, "_create_small_completion", new_callable=AsyncMock, return_value=response), \
+                patch.object(ai, "_create_completion", new_callable=AsyncMock, return_value=response) as completion:
+            for message in cases:
+                with self.subTest(message=message):
+                    self.assertEqual(await ai.generate_response(message, "character"), response.choices[0].message.content)
+                    sent = completion.await_args.args[0]
+                    self.assertEqual(sent[-1], {"role": "user", "content": message})
+                    self.assertIn("SOCIAL INTERPRETATION", sent[0]["content"])
+        self.assertEqual(completion.await_count, len(cases))
+
+    async def test_social_awareness_covers_images_and_control_reactions_without_extra_reply_calls(self):
+        from app.utils import ai
+        cfg = config()
+        cfg["bot"]["character_chat"]["social_awareness"] = True
+        response = types.SimpleNamespace(choices=[types.SimpleNamespace(message=types.SimpleNamespace(content="yo"))])
+        with patch.object(conversation, "_config", return_value=cfg), patch.object(ai, "_initialised", True), \
+                patch.object(ai, "_create_small_completion", new_callable=AsyncMock, return_value=response), \
+                patch.object(ai, "_create_completion", new_callable=AsyncMock, return_value=response) as completion, \
+                patch.object(ai, "_create_image_completion", new_callable=AsyncMock, return_value=response), \
+                patch.object(ai, "_prepare_image_url", new_callable=AsyncMock, return_value="data:image/png;base64,x"):
+            await ai.generate_response_image("look at this", "character", "image")
+            await ai.generate_response("act like a boomer", "character")
+        self.assertEqual(completion.await_count, 2)
+        for call in completion.await_args_list:
+            self.assertIn("SOCIAL INTERPRETATION", call.args[0][0]["content"])
+
     def test_casual_role_changes_identity_changes_and_future_orders_are_control_requests(self):
         examples = (
             "Act like youre a boomer in your next message to me",

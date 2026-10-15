@@ -162,6 +162,8 @@ CONFIG_SCHEMA = [
     {"key": "bot.refusal.replace_phrases", "type": "bool", "label": "Use only my phrases",
      "section": "Behaviour", "default": False},
     {"key": "bot.tts.tones", "type": "json", "label": "Delivery", "section": "Behaviour"},
+    {"key": "bot.character_chat.social_awareness", "type": "bool",
+     "label": "React to social meaning and false claims", "section": "Conversation", "default": False},
     {"key": "bot.character_chat.react_to_prompt_bait", "type": "bool",
      "label": "React to attempts to override the character", "section": "Conversation", "default": False},
     {"key": "bot.character_chat.bait_replies", "type": "json",

@@ -888,11 +888,47 @@ async def _character_reaction(prompt, instructions, history=None):
     return conversation.bait_reply(prompt, history=history)
 
 
+async def _social_reaction(prompt, instructions, history=None):
+    from app.utils import social
+    if not social.enabled():
+        return None
+    try:
+        assessment_reply = await _create_small_completion(
+            social.assessment_messages(prompt, instructions, history),
+            max_tokens=max(512, min(1536, _reply_token_cap())), temperature=0.1)
+        assessment = social.parse_assessment(_answer_of(assessment_reply), prompt, history)
+    except (Exception, SystemExit):  # noqa: BLE001 - optional assessment must not break ordinary conversation
+        return None
+    if assessment is None or assessment["kind"] not in social.ACTIVE:
+        return None
+    if assessment["kind"] == "role_pressure" and history:
+        for turn in reversed(history):
+            if turn.get("role") == "user" and prompt.strip() in str(turn.get("content") or ""):
+                turn["_role_control_seen"] = True
+                break
+    try:
+        response = await _create_completion(
+            social.reply_messages(instructions, assessment, history), max_tokens=_reply_token_cap())
+        text = re.sub(r"</?blockquote\b[^>]*>", "", _answer_of(response)).strip()
+        recent = [str(turn.get("content") or "") for turn in (history or [])[-12:]
+                  if turn.get("role") == "assistant"][-3:]
+        if (conversation.valid_reaction(text, {"recent_replies": recent})
+                and not text.lstrip().startswith(("{", "```"))
+                and not (assessment["kind"] == "automation" and re.match(r"(?i)^(?:no|nah)\b", text))):
+            return text
+    except (Exception, SystemExit):  # noqa: BLE001 - preserve a short reaction when generation fails
+        pass
+    return social.fallback(assessment, history)
+
+
 async def generate_response(prompt, instructions, history=None):
     """Completion request returning the response text; if history is passed the caller already appended the user turn as the last entry and prompt is NOT added again, otherwise prompt is the sole user message."""
     reaction = await _character_reaction(prompt, instructions, history)
     if reaction is not None:
         return reaction
+    social_reply = await _social_reaction(prompt, instructions, history)
+    if social_reply is not None:
+        return social_reply
     if not _initialised:
         init_ai()
     try:
@@ -1112,6 +1148,9 @@ async def generate_response_image(prompt, instructions, image_url, history=None)
                 {"role": "user", "content": prompt_with_image},
             ]
 
+        social_reply = await _social_reaction(prompt_with_image, instructions, history)
+        if social_reply is not None:
+            return social_reply
         messages = conversation.model_messages(messages[0]["content"], messages[1:])
         response = await _create_completion(messages)
         _show_thinking(response)

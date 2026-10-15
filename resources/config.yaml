@@ -64,6 +64,7 @@ bot:
     keep_recent: 6
     max_bytes: 32768  # UTF-8 input budget, including the persona text
   character_chat:
+    social_awareness: false  # interpret claims, teasing and unfamiliar slang against the character and conversation
     react_to_prompt_bait: false  # protect character identity from role changes, including delayed reply commands
     bait_replies: []  # optional custom fallbacks; empty uses varied, escalating character reactions
 
