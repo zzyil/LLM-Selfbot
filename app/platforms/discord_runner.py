@@ -3512,7 +3512,8 @@ async def is_trigger_message(message):
     if is_server and not getattr(bot, "allow_server", True):
         mentioned = False
         replied_to = False
-    elif is_server and bot.hold_conversation and getattr(bot, "active_chat", None) is not None:
+    elif is_server and not companion_memory.server_enabled() and bot.hold_conversation \
+            and getattr(bot, "active_chat", None) is not None:
         in_conversation = bot.active_chat.followup(message, bot.selfbot_id)
 
     _trig = (
@@ -3828,7 +3829,7 @@ async def _update_memory_after_reply(author, prompt, response):
         log_error("Memory Error", str(mem_err))
 
 
-async def generate_response_and_reply(message, prompt, history, image_url=None, wait_time=0, bypass_cooldown=False, bypass_typing=False, update_memory=True):
+async def generate_response_and_reply(message, prompt, history, image_url=None, wait_time=0, bypass_cooldown=False, bypass_typing=False, update_memory=True, server_initiated=False):
     if not companion_memory.message_allowed(message):
         return None
     if conversation.ignored_chat_message(message) or conversation.ignored_slash(prompt):
@@ -3960,6 +3961,16 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
     # Verbosity profile + Discord reaction vocabulary
     enriched_instructions += style_block()
     enriched_instructions += reaction_rules()
+    if server_initiated:
+        enriched_instructions += (
+            "\n\n[SERVER PARTICIPATION: You chose to chime into the ongoing group topic without a mention. "
+            "Add a short, specific reaction or opinion grounded in the recent chat, in your existing voice. "
+            "This is a group comment, not a request addressed to you. Do not greet, announce joining, "
+            "introduce yourself, give unsolicited instructions, demand attention or invent shared events. "
+            "Do not claim to share their room, food order, game session or offline plans unless your "
+            "participation has been established in the conversation. "
+            "Do not ask a filler question. Use one short message, at most two sentences and 45 words. "
+            "This overrides chatty-length guidance. Do not send pictures, voice or reaction-only replies.]")
 
     # Inject real France time so the AI always knows the current local time.
     _fr_time_str = france_time_str()
@@ -3977,6 +3988,8 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
         _available_pics = _get_random_picture()
     _chosen_pic_idx = None
     _chosen_pic_idx2 = None
+    if server_initiated:
+        _available_pics = None
     if _available_pics:
         _pic_list_str = "\n".join(f"{i}: {desc}" for i, (_t, _p, desc) in enumerate(_available_pics))
         _what = "video" if _wants_video else "photo"
@@ -4157,16 +4170,27 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
     if not response:
         return None
 
+    if server_initiated and (_server_chat is None
+                             or not _server_chat.ambient_can_send(message)):
+        return None
+
     if conversation.ignored_chat_message(message):
         set_reply_state(message.author.id, "skipped", reason="slash commands are disabled")
         return None
 
     response = strip_meta(response).replace("\u2014", "").replace("\u2013", "")
 
+    if server_initiated:
+        from app.utils.server_chat import brief_comment
+        response, _, _ = parse_reaction_tag(response, reaction_emojis(config["bot"].get("reactions") or {}))
+        response = brief_comment(response)
+        if not response:
+            return None
+
     # reaction handling: the model may end a reply with [[REACT:emoji]] (react + reply) or send only [[REACT_ONLY:emoji]] (react, no text); emoji are allowlisted in behavior.py, and react-only stays a rare human thing, capped and never used when it would leave a question unanswered (the prompt says so)
     _react_emoji, _react_only = None, False
     _react_cfg = config["bot"].get("reactions") or {}
-    if _react_cfg.get("enabled", True):
+    if _react_cfg.get("enabled", True) and not server_initiated:
         response, _react_emoji, _react_only = parse_reaction_tag(
             response, reaction_emojis(_react_cfg))
         # the tag is stripped whatever happens; whether it is acted on is a separate question, and telling a model to react "only when a human would" gets a reaction on nearly every reply, because from inside one reply there is always some reason to. this is the actual rate control. gated only when there is text to send: a reaction is the entire reply in the react-only case, and dropping it there would answer with silence, which is worse than reacting too often
@@ -4210,7 +4234,7 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
     response = _strip_pic_tags(response)
 
     tts_cfg = config["bot"].get("tts") or {}
-    if tts_cfg.get("enabled", True) and is_tts_request(prompt):
+    if not server_initiated and tts_cfg.get("enabled", True) and is_tts_request(prompt):
         try:
             spoken_instructions = (
                 enriched_instructions
@@ -4260,7 +4284,7 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
         _overflow = _style_pieces[_style_max_chunks - 1:]
         _style_pieces = _style_pieces[:_style_max_chunks - 1]
         _style_pieces.append(" ".join(_overflow)[:1900])
-    chunks = _style_pieces
+    chunks = [response] if server_initiated and response.strip() else _style_pieces
 
     # global cooldown: human gap between replies so different conversations never land seconds apart; skipped with bypass_cooldown or when disabled
     if not bypass_cooldown and GLOBAL_COOLDOWN_ENABLED:
@@ -4417,6 +4441,10 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
                         raise asyncio.CancelledError
                     if _server_chat is not None:
                         _server_chat.mark_sending(message.channel.id)
+                    if server_initiated:
+                        if not _server_chat.ambient_can_send(message):
+                            raise asyncio.CancelledError
+                        return await message.channel.send(chunk, allowed_mentions=discord.AllowedMentions.none())
                     if isinstance(message.channel, discord.DMChannel):
                         return await message.channel.send(chunk)
                     if message.channel.id in _no_reply_channels:
@@ -4716,12 +4744,13 @@ _server_chat = None
 def _get_server_chat():
     global _server_chat
     if _server_chat is None:
-        from app.utils.server_chat import ServerChat
+        from app.utils.server_chat import ServerChat, consider_chiming_in
         _server_chat = ServerChat(
             self_id=lambda: bot.selfbot_id,
             get_config=lambda: companion_memory.settings().get("server") or {},
             respond=_reply_in_server, learn=_learn_in_server, seed=_seed_server_chat,
             can_reply=_server_can_reply, scheduled=_server_reply_scheduled,
+            consider_ambient=consider_chiming_in,
             is_active=lambda m: bool(getattr(bot, "active_chat", None) and bot.active_chat.active(m)),
             report=lambda exc: log_error("Server companion", type(exc).__name__))
         bot.server_companion = _server_chat
@@ -4746,7 +4775,7 @@ def _observe_server_lingo(message):
 
 
 def _server_can_reply(message):
-    return (companion_memory.settings().get("enabled", False)
+    return (companion_memory.server_enabled()
             and companion_memory.message_allowed(message)
             and not bot.paused and bot.allow_server
             and message.author.id not in bot.paused_users
@@ -4779,7 +4808,8 @@ async def _reply_in_server(message, history, directed):
     image_url = (message.attachments[0].url if message.attachments
                  and not (message.flags.value & (1 << 13)) else _extract_image_url_from_message(message))
     response = await generate_response_and_reply(
-        message, message.content or "[attachment]", history, image_url=image_url, update_memory=False)
+        message, message.content or "[attachment]", history, image_url=image_url, update_memory=False,
+        server_initiated=not directed)
     if response:
         clear_reply_state(message.author.id)
         if directed:
@@ -4962,7 +4992,7 @@ async def on_message(message):
     if in_server(message.channel):
         _observe_server_lingo(message)
 
-    if in_server(message.channel) and companion_memory.settings().get("enabled", False):
+    if in_server(message.channel) and companion_memory.server_enabled():
         if _server_can_reply(message):
             trigger, _, _ = await is_trigger_message(message)
             if _get_server_chat().receive(message, directed=trigger):

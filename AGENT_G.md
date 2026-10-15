@@ -308,9 +308,34 @@ learning_min_messages: 4
 learning_interval_seconds: 120
 ```
 
-Ambient replies are optional: for example, `0.02` gives an otherwise unaddressed
-message a 2% chance to create a reply opportunity, subject to the same queue and
-cooldown. The default is zero. Change `names` to match your persona.
+Set `bot.companion.server.enabled: true` to use this scheduler independently of
+the top-level companion access mode. This preserves existing DM access when
+`bot.companion.enabled` is false; enabling server conversations does not reset
+the character or alter its persona, memories, slash-command policy or model.
+
+Unprompted participation is optional (`ambient_reply_probability` defaults to
+zero). With a nonzero value, the character first observes at least eight fresh
+member messages from two people over at least 45 seconds, within a ten-minute
+window. It considers an opportunity no more than once every 30 seconds. The
+probability controls whether to run a neutral model check, not whether to force
+a post. The model must identify a useful current contribution supported by a
+literal excerpt from the latest message; malformed or unavailable decisions
+mean staying quiet. It receives the character document, recent channel context
+and relevant learned server vocabulary as data. Inference follows local-only routing.
+
+Participation attempts have a three-minute channel cooldown and a 90-second
+account-wide cooldown. Direct questions take priority over pending unprompted
+comments. Commands, RP invitations, other people's targeted exchanges, stale
+topics and manual self-posts do not trigger an interruption. Unprompted comments
+are brief ordinary channel posts without reply references, pings, pictures,
+voice or reaction-only output. A comment allows a couple of short follow-ups;
+it does not make every future message from that member a direct conversation.
+Explicitly directed conversations retain their configured active window.
+
+Tune `ambient_min_messages`, `ambient_min_members`, `ambient_read_seconds`,
+`ambient_window_seconds`, `ambient_check_seconds`, `ambient_cooldown_seconds`
+and `ambient_global_cooldown_seconds` under `bot.companion.server`. Primary
+controls appear in Settings under Conversation. Change `names` to match your persona.
 
 Passive learning batches each member's own statements separately, after four
 messages or a direct interaction, at most once every two minutes per member and

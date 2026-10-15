@@ -87,11 +87,19 @@ bot:
     follow_joined_servers: false # character preset enables this when no restrictions are supplied
     include_threads: true      # threads inherit an allowed parent channel
     server:
+      enabled: false           # shared server chat without changing DM access
       names: ["G"]
       history_messages: 40
       reply_to_name: true
       followup_seconds: 45
       ambient_reply_probability: 0.0
+      ambient_min_messages: 8
+      ambient_min_members: 2
+      ambient_read_seconds: 45
+      ambient_window_seconds: 600
+      ambient_check_seconds: 30
+      ambient_cooldown_seconds: 180
+      ambient_global_cooldown_seconds: 90
       batch_wait_seconds: 3
       reply_cooldown_seconds: 20
       max_reply_age_seconds: 120

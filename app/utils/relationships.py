@@ -29,6 +29,11 @@ def settings(config=None):
     return ((config or {}).get("bot") or {}).get("companion") or {}
 
 
+def server_enabled(config=None):
+    cfg = settings(config)
+    return bool(cfg.get("enabled", False) or (cfg.get("server") or {}).get("enabled", False))
+
+
 def discord_scope(message):
     # Discord is a place the character visits; it doesn't create a new identity.
     return CHARACTER_SCOPE

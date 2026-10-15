@@ -136,7 +136,7 @@ class ServerConversations(unittest.IsolatedAsyncioTestCase):
         namespace = {
             "conversation": conversation,
             "discord": discord, "bot": bot, "companion_memory": types.SimpleNamespace(
-                message_allowed=lambda m: True, settings=lambda: {"enabled": True}),
+                message_allowed=lambda m: True, settings=lambda: {"enabled": True}, server_enabled=lambda: True),
             "_log_dm": lambda m: None, "_cache_author": lambda a: None,
             "remember_user": lambda a: None, "_blocked_users": set(), "OWNER_ID": 0,
             "should_ignore_message": lambda m: False, "PREFIX": "/", "TRIGGER_RE": None,
@@ -163,6 +163,7 @@ class ServerConversations(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.sent[0][2])
         # The legacy trigger path also honors the active window, but retains its owner controls.
         bot.active_chat = types.SimpleNamespace(followup=lambda m, self_id: m.author.id == 1)
+        namespace["companion_memory"].server_enabled = lambda: False
         followup = message(3, text="what about this though?")
         followup.channel = text_channel(id=100, parent_id=None)
         self.assertTrue((await namespace["is_trigger_message"](followup))[0])
@@ -239,6 +240,7 @@ class ServerConversations(unittest.IsolatedAsyncioTestCase):
         await self.settle()
         self.assertEqual(self.sent, [])
         self.config["ambient_reply_probability"] = 1
+        self.config.update({"ambient_min_messages": 1, "ambient_min_members": 1, "ambient_read_seconds": 0})
         self.chat.receive(message(2, text="another topic"))
         await self.settle()
         self.assertFalse(self.sent[0][2])
