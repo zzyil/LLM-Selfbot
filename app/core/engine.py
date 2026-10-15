@@ -22,6 +22,7 @@ from app.utils.memory import (
 from app.utils.mood import get_mood_prompt
 from app.utils.helpers import load_config, load_instructions, france_time_str
 from app.utils.logger import log_system
+from app.utils import conversation
 
 def _bot_cfg() -> dict:
     """This account's settings (its persona's, on everyone's), read when they are used: read once as the module
@@ -664,18 +665,8 @@ async def generate_ai_response(msg: IncomingMessage) -> Optional[str]:
 
     # ── History management ───────────────────────────────────────────────────
     history.append({"role": "user", "content": msg.content})
-    if len(history) > MAX_HISTORY * 2:
-        history = history[-(MAX_HISTORY * 2):]
-        message_history[history_key] = history
-
-    if len(history) > 20:
-        try:
-            summarised = await summarize_history(history, enriched)
-            if summarised:
-                history = summarised
-                message_history[history_key] = history
-        except Exception:
-            pass
+    history = await conversation.prepare_history(history, enriched, summarize_history)
+    message_history[history_key] = history
 
     # ── Generate response ────────────────────────────────────────────────────
     try:
@@ -753,8 +744,7 @@ def add_user_message(user_id: str, channel_id: str, content: str):
     hist = message_history.setdefault(key, [])
     hist.append({"role": "user", "content": content})
     # Cap growth so a long pause can't grow one chat's history without bound.
-    if len(hist) > MAX_HISTORY * 2:
-        message_history[key] = hist[-(MAX_HISTORY * 2):]
+    message_history[key] = conversation.bound_history(hist)
 
 
 def has_pending(user_id: str, channel_id: str) -> bool:

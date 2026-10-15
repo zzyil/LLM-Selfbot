@@ -84,6 +84,19 @@ class ServerConversations(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Sam [user 2]: same lol", transcript)
         self.assertEqual(self.sent[0][0].id, 3)
 
+    async def test_larger_channel_window_survives_edits_and_deletions(self):
+        self.config["history_messages"] = 200
+        for mid in range(1, 121):
+            self.chat.observe(message(mid, text=f"message {mid}"))
+        self.assertEqual(len(self.chat.history(100)), 120)
+        self.assertIn("message 1", self.chat.history(100)[0]["content"])
+        self.chat.edit(100, 60, "edited middle")
+        self.chat.delete(100, 61)
+        history = self.chat.history(100)
+        self.assertEqual(len(history), 119)
+        self.assertIn("edited middle", "\n".join(t["content"] for t in history))
+        self.assertEqual(self.chat.channels[100].messages.maxlen, 200)
+
     async def test_real_message_handler_dispatches_server_context_and_mentions(self):
         tree = ast.parse((ROOT / "app/platforms/discord_runner.py").read_text())
         callbacks = [node for node in tree.body if isinstance(node, ast.AsyncFunctionDef)

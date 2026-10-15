@@ -7,6 +7,8 @@ import time
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 
+from app.utils import conversation
+
 
 def _number(config, key, default, minimum, maximum):
     try:
@@ -64,8 +66,12 @@ class ServerChat:
         self.learning_task = None
         self.closed = False
 
+    def _history_limit(self):
+        return int(_number(self.get_config() or {}, "history_messages", 40, 8, 1000))
+
     def _channel(self, message):
         channel_id = message.channel.id
+        limit = self._history_limit()
         state = self.channels.get(channel_id)
         if state is None:
             # Keep only a bounded number of channels, never evicting an active reply worker.
@@ -76,6 +82,9 @@ class ServerChat:
                     return None
                 self.channels.pop(idle)
             state = self.channels[channel_id] = Channel(first_message=message)
+        if state.messages.maxlen != limit:
+            state.messages = deque(state.messages, maxlen=limit)
+            state.ids = deque(state.ids, maxlen=max(200, limit * 2))
         self.channels.move_to_end(channel_id)
         return state
 
@@ -174,7 +183,7 @@ class ServerChat:
                     if not state.seeded:
                         state.seeded = True
                         try:
-                            state.earlier = (await self.seed(state.first_message))[-20:]
+                            state.earlier = (await self.seed(state.first_message))[-self._history_limit():]
                         except Exception as exc:  # noqa: BLE001 - isolate and report transport callbacks
                             self.report(exc)
                     history = self.history(message.channel.id)
@@ -197,7 +206,9 @@ class ServerChat:
         state = self.channels.get(channel_id)
         if state is None:
             return []
-        return (state.earlier + [_turn(m, self.self_id()) for m in state.messages])[-40:]
+        return conversation.bound_history(
+            state.earlier + [_turn(m, self.self_id()) for m in state.messages],
+            max_messages=self._history_limit())
 
     def cancel(self, channel_id=None, user_id=None):
         stopped = False
@@ -280,7 +291,7 @@ class ServerChat:
         if state:
             if state.current is not None and state.current.id == message_id:
                 self.cancel(channel_id)
-            state.messages = deque((m for m in state.messages if m.id != message_id), maxlen=40)
+            state.messages = deque((m for m in state.messages if m.id != message_id), maxlen=state.messages.maxlen)
             if state.pending and state.pending[0].id == message_id:
                 state.pending = None
             for batch in state.learning.values():

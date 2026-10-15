@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 import discord
 from app.utils import relationships as companion_memory
+from app.utils import conversation
 
 # No third-party property service: discord.py-self normally fetches its client
 # properties from a selfbot-community endpoint (cordapi) before falling back to
@@ -778,14 +779,15 @@ async def seed_history(key: str, first_message) -> None:
         return
     seeded.add(key)
     turns: list[dict] = []
+    history_limit = conversation.history_settings()["max_messages"]
     ch = first_message.channel
     try:
         other = _dm_partner(first_message)
         if other is not None:
-            turns = _chatlog.seed_turns(ACCOUNT_INDEX, other, first_message.created_at.timestamp(), limit=MAX_HISTORY * 2)
+            turns = _chatlog.seed_turns(ACCOUNT_INDEX, other, first_message.created_at.timestamp(), limit=history_limit)
         if not turns and history_scan_allowed():
             me = getattr(bot, "selfbot_id", None)
-            msgs = [m async for m in ch.history(limit=MAX_HISTORY * 2, before=first_message)]
+            msgs = [m async for m in ch.history(limit=history_limit, before=first_message)]
             msgs.reverse()
             if other is not None:
                 _chatlog.put_many(ACCOUNT_INDEX, other, [(m.id, m.author.id == me, m.created_at.timestamp(), _message_payload(m))
@@ -805,7 +807,7 @@ async def seed_history(key: str, first_message) -> None:
     except Exception:
         turns = []
     if turns:
-        turns = turns[-MAX_HISTORY:]
+        turns = conversation.bound_history(turns)
         bot.message_history[key] = turns + list(bot.message_history.get(key, []))
         try:
             log_system(f"Picked up {len(turns)} earlier turns of the conversation before replying")
@@ -3984,15 +3986,8 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
             )
             late_opener = "auto"
 
-    if len(history) > 20:
-        try:
-            summarized = await summarize_history(history, enriched_instructions)
-            if summarized:
-                history = summarized
-                key = history_key(message)
-                bot.message_history[key] = history
-        except Exception:
-            pass
+    history = await conversation.prepare_history(history, enriched_instructions, summarize_history)
+    bot.message_history[history_key(message)] = history
 
     if message.attachments and (message.flags.value & (1 << 13)):
         try:
@@ -4835,8 +4830,7 @@ async def on_message(message):
         # append `combined` (not the raw target message); when a hint is supplied, generate_response() drives off history, so the hint must live in history or it gets silently dropped
         bot.message_history[key].append(
             {"role": "user", "content": as_turn(target_msg, combined)})
-        if len(bot.message_history[key]) > MAX_HISTORY * 2:
-            bot.message_history[key] = bot.message_history[key][-(MAX_HISTORY * 2):]
+        bot.message_history[key] = conversation.bound_history(bot.message_history[key])
 
         history = bot.message_history[key]
         log_system(f"Priority trigger by owner → responding to {target_msg.author.name} in #{getattr(target_msg.channel, 'name', 'DM')}")
@@ -5054,8 +5048,7 @@ async def process_message_queue(batch_key):
                     bot.message_history[key] = []
                 bot.message_history[key].append(
                     {"role": "user", "content": as_turn(message_to_reply_to, combined_content)})
-                if len(bot.message_history[key]) > MAX_HISTORY * 2:
-                    bot.message_history[key] = bot.message_history[key][-(MAX_HISTORY * 2):]
+                bot.message_history[key] = conversation.bound_history(bot.message_history[key])
                 history = bot.message_history[key]
 
                 # stale reply guard (servers & group chats only): if the channel moved on significantly since the triggering message, skip the reply so the bot doesn't resurface a buried conversation

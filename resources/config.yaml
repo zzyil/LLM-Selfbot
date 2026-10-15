@@ -57,6 +57,16 @@ bot:
     tts_model: ""         # speaks               (kokoro, tts-1, ...)
     tts_voice: ""         # voice names are per-engine (af_sky, alloy, ...)
 
+  # Active chat history, independent of Discord's object cache.
+  history:
+    max_messages: 30
+    summarize_after: 20
+    keep_recent: 6
+    max_bytes: 32768  # UTF-8 input budget, including the persona text
+  character_chat:
+    react_to_prompt_bait: false
+    bait_replies: ["wtf???", "bro what???", "what are you on about"]
+
   # Agent G companion mode. Opt in via scripts/setup_agent_g.py before first launch.
   # With follow_joined_servers off, empty channel and server lists answer nothing.
   companion:
@@ -67,6 +77,7 @@ bot:
     include_threads: true      # threads inherit an allowed parent channel
     server:
       names: ["G"]
+      history_messages: 40
       reply_to_name: true
       followup_seconds: 45
       ambient_reply_probability: 0.0

@@ -90,6 +90,35 @@ fail locally; they aren't sent to another provider. An unset chat model stays
 unconfigured. The app still connects to Discord and retains upstream networking
 features such as updates; this option controls inference providers.
 
+## Character reactions and context
+
+For a character that reacts socially to explicit requests to ignore its persona,
+enable `bot.character_chat.react_to_prompt_bait`. Its `bait_replies` list supplies
+short reactions such as "wtf???" for direct instruction overrides or requests to
+reply out of character, without sending those requests to the model. This narrow
+rule is optional and does not classify every possible prompt injection. Quoted
+examples and reported speech can still be discussed normally.
+
+`bot.history` controls the actual chat transcript, separately from Discord's
+`bot.cache.max_messages`. For a local model with enough room, for example:
+
+```yaml
+bot:
+  history:
+    max_messages: 200
+    summarize_after: 180
+    keep_recent: 120
+    max_bytes: 98304
+```
+
+The byte limit includes the persona text and conservatively bounds text input;
+it is not a tokenizer measurement. Larger settings must fit the model's loaded
+context window. Increasing this setting does not reload or enlarge a model's
+own context allocation. When compression fails or returns no visible text, keep
+the bounded original transcript instead of discarding it for an empty summary.
+Guild companion history also uses `bot.companion.server.history_messages` (40 by
+default); set it to 200 to retain a larger shared channel transcript.
+
 ## Server conversations
 
 Companion mode works in server text channels, threads and forum posts the account
