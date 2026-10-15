@@ -2,6 +2,8 @@
 
 DESCRIPTIONS = {
     "bot.owner_id": "Your Discord user ID. Owner only commands check against this.",
+    "bot.chat_commands.enabled": "Load and execute Discord chat commands. Disabled characters are controlled from this interface instead.",
+    "bot.chat_commands.ignore_slash": "Silently ignore messages beginning with /, including whitespace variants, without replying, reacting, learning or extending a conversation.",
     "bot.prefix": "Character that starts a command, like ! or .",
     "bot.trigger": "Words that make the bot reply even when it was not mentioned.",
     "bot.default_language": "Language to fall back to when it cannot detect one.",

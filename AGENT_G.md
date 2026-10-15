@@ -145,6 +145,19 @@ misunderstand usage; evidence and uncertainty reduce that risk rather than elimi
 
 ## Conversation availability
 
+Discord chat commands are disabled by default (`bot.chat_commands.enabled: false`):
+the runner does not load command extensions or resolve a command prefix. Owner and
+self-account messages do not bypass this. The local interface remains available
+for settings and account controls. Re-enabling command extensions requires a restart.
+
+`bot.chat_commands.ignore_slash` defaults to true. Messages beginning with `/`,
+including leading whitespace, invisible characters, full-width slash variants and
+native command invocations, are silently ignored before command handling, reply
+scheduling, automatic reactions, learning or active-window updates. Manual Reply
+cannot force an AI response to them. Old command text and associated replies are
+excluded from model context while raw chat logs remain intact. Ordinary URLs,
+fractions and conversational mentions of `/help` continue to work.
+
 `bot.active_chat.enabled` defaults to true. Accepted messages and reply generation
 refresh a two-hour active window for that person and channel. During the window,
 random batch waits and the discretionary send gap are capped at eight seconds,

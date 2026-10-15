@@ -3,6 +3,10 @@
 CONFIG_SCHEMA = [
     {"key": "bot.owner_id", "type": "int", "label": "Owner user ID",
      "section": "General", "requires_restart": True},
+    {"key": "bot.chat_commands.enabled", "type": "bool", "label": "Enable Discord chat commands",
+     "section": "General", "default": False, "requires_restart": True},
+    {"key": "bot.chat_commands.ignore_slash", "type": "bool", "label": "Ignore slash-prefixed messages",
+     "section": "Behaviour", "default": True},
     {"key": "bot.prefix", "type": "str", "label": "Command prefix",
      "section": "General", "requires_restart": True},
     {"key": "bot.trigger", "type": "str", "label": "Trigger words (comma-separated)",

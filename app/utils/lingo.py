@@ -395,7 +395,8 @@ class Learner:
         return explicit or len(batch) >= config["learning_min_messages"], explicit
 
     def observe(self, message):
-        if not settings()["enabled"] or not self.can_learn(message) or not (message.content or "").strip():
+        if conversation.ignored_chat_message(message) or not settings()["enabled"] or not self.can_learn(message) \
+                or not (message.content or "").strip():
             return
         key = (str(message.guild.id), str(message.channel.id))
         if key not in self.channels and len(self.channels) >= 64:
@@ -428,7 +429,8 @@ class Learner:
                 await self.sleep(max(1, self.last.get(key, float("-inf")) + cooldown - self.clock()))
                 async with self.slot:
                     revision = self.revisions[key]
-                    messages = [item for item in batch if self.can_learn(item)]
+                    messages = [item for item in batch if not conversation.ignored_chat_message(item)
+                                and self.can_learn(item)]
                     if not messages or not settings()["enabled"]:
                         return
                     self.last[key] = self.clock()

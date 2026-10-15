@@ -4,6 +4,9 @@ bot:
 
   # Prefix for bot commands
   prefix: "/"
+  chat_commands:
+    enabled: false
+    ignore_slash: true
 
   # The word(s) the AI responds to
   trigger: "John, Jon"

@@ -19,6 +19,51 @@ def _integer(value, default, minimum, maximum):
         return default
 
 
+def commands_enabled(config=None):
+    return bool(((_config(config).get("bot") or {}).get("chat_commands") or {}).get("enabled", False))
+
+
+def ignored_slash(text, config=None):
+    settings = ((_config(config).get("bot") or {}).get("chat_commands") or {})
+    if not settings.get("ignore_slash", True):
+        return False
+    text = unicodedata.normalize("NFKC", str(text or ""))
+    text = re.sub(r"[\u200b-\u200f\ufeff]", "", text).lstrip()
+    return text.startswith("/")
+
+
+def ignored_chat_message(message, config=None):
+    # Native Discord command invocation messages may have no text at all.
+    native = getattr(getattr(message, "type", None), "name", "") == "chat_input_command"
+    return ignored_slash(getattr(message, "content", ""), config) or (native and ignored_slash("/", config))
+
+
+def without_slash_history(history, config=None):
+    """Keep raw logs intact; command text and its old replies are not conversational context."""
+    out, skip_reply = [], False
+    for turn in history:
+        saved = dict(turn)
+        if turn.get("role") == "user" and isinstance(turn.get("content"), str):
+            lines, blocked = [], False
+            for line in turn["content"].splitlines():
+                # Server transcripts prepend a stable speaker label before the original content.
+                content = re.sub(r"^.{1,80}?\s+\[user\s+\d+\]:\s*", "", line)
+                content = re.sub(r"^[^:\n]{1,120}:\s+", "", content)
+                if ignored_slash(content, config):
+                    blocked = True
+                    break
+                lines.append(line)
+            if blocked:
+                saved["content"] = "\n".join(lines).strip()
+            skip_reply = blocked and not saved["content"]
+            if skip_reply:
+                continue
+        elif turn.get("role") == "assistant" and skip_reply:
+            continue
+        out.append(saved)
+    return out
+
+
 def history_settings(config=None):
     raw = ((_config(config).get("bot") or {}).get("history") or {})
     maximum = _integer(raw.get("max_messages"), 30, 8, 1000)
@@ -350,7 +395,7 @@ def reaction_plan(prompt, history=None, config=None):
     kind = control_kind(prompt)
     if not character_guard_enabled(config) or not kind:
         return None
-    recent = (history or [])[-12:]
+    recent = without_slash_history(history or [], config)[-12:]
     user_turns = [t for t in recent if t.get("role") == "user"]
     attempts = sum(_is_bait(t.get("content") or "") for t in user_turns)
     included = bool(user_turns and (prompt or "").strip() in (user_turns[-1].get("content") or ""))
@@ -421,6 +466,7 @@ def valid_reaction(text, plan):
 
 def model_history(history, config=None, *, for_summary=False):
     """Keep logs intact; quarantine control requests and stop imitating replies they may have influenced."""
+    history = without_slash_history(history, config)
     if not character_guard_enabled(config):
         return [{k: v for k, v in turn.items() if k != "_role_control_seen"} for turn in history]
     out, exposed = [], any(turn.get("_role_control_seen") is True for turn in history)

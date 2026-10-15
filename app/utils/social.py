@@ -19,7 +19,7 @@ def enabled(config=None):
 
 
 def earlier_turns(history, prompt):
-    recent = (history or [])[-12:]
+    recent = conversation.without_slash_history(history or [])[-12:]
     if recent and recent[-1].get("role") == "user" and prompt.strip() in str(recent[-1].get("content") or ""):
         return recent[:-1]
     return recent

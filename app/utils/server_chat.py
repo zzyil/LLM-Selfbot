@@ -91,7 +91,7 @@ class ServerChat:
         return state
 
     def observe(self, message):
-        if self.closed:
+        if self.closed or conversation.ignored_chat_message(message):
             return None
         state = self._channel(message)
         if state is None or message.id in state.ids:
@@ -284,6 +284,9 @@ class ServerChat:
             self.learning_task = None
 
     def edit(self, channel_id, message_id, content):
+        if conversation.ignored_slash(content):
+            self.delete(channel_id, message_id)
+            return
         state = self.channels.get(channel_id)
         if state:
             for message in state.messages:

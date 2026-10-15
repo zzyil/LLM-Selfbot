@@ -118,6 +118,12 @@ init()
 set_theme("discord")
 
 
+def discord_command_prefix(_bot, message):
+    if not conversation.commands_enabled() or conversation.ignored_chat_message(message):
+        return []
+    return load_config()["bot"]["prefix"]
+
+
 def get_batch_wait_time(server: bool = False, message=None):
     """How long to sit on a message before answering it. Servers get their own table when configured: ten minutes on a DM reads as away-from-phone, on a channel the chat has moved on and the reply lands on nothing; unset, servers fall back to the DM table."""
     b = config["bot"]
@@ -261,7 +267,7 @@ def refresh_config(bot=None) -> None:
     _STALE_CFG = b.get("stale_reply") or {}
 
     if bot is not None:
-        bot.command_prefix = PREFIX
+        bot.command_prefix = discord_command_prefix
         bot.owner_id = OWNER_ID
         bot.allow_dm = b["allow_dm"]
         bot.allow_gc = b["allow_gc"]
@@ -605,7 +611,7 @@ def create_bot() -> commands.Bot:
     """Instantiate a fully configured bot for this process's account."""
     # discord.py caches way more than this bot uses (only _save_pending_messages reads the message cache): member_cache_flags defaults to keeping every member of every guild, chunk_guilds_at_startup fetches them all over the gateway before the first reply, and max_messages holds 1000 Message objects; chunk_guilds is stated explicitly so an explicit True with no member cache can't raise, and message.author still works because discord.py builds it from the payload whether cached or not
     kwargs = {
-        "command_prefix": PREFIX,
+        "command_prefix": discord_command_prefix,
         "help_command": None,
         "member_cache_flags": discord.MemberCacheFlags.none(),
         "chunk_guilds_at_startup": False,
@@ -803,6 +809,8 @@ async def seed_history(key: str, first_message) -> None:
             for m in msgs:
                 if m.type not in (discord.MessageType.default, discord.MessageType.reply):
                     continue
+                if conversation.ignored_chat_message(m):
+                    continue
                 text = _turn_text(m)
                 if not text:
                     continue
@@ -815,7 +823,7 @@ async def seed_history(key: str, first_message) -> None:
     except Exception:
         turns = []
     if turns:
-        turns = conversation.bound_history(turns)
+        turns = conversation.bound_history(conversation.without_slash_history(turns))
         bot.message_history[key] = turns + list(bot.message_history.get(key, []))
         try:
             log_system(f"Picked up {len(turns)} earlier turns of the conversation before replying")
@@ -3455,7 +3463,8 @@ async def on_socket_raw_receive(data):
 
 def should_ignore_message(message):
     return (
-        message.author.id in bot.ignore_users
+        conversation.ignored_chat_message(message)
+        or message.author.id in bot.ignore_users
         or message.author.id == bot.selfbot_id
         or message.author.bot
         or message.type not in (discord.MessageType.default, discord.MessageType.reply)
@@ -3793,6 +3802,8 @@ def _relationship_update_done(task):
 
 async def _update_memory_after_reply(author, prompt, response):
     """Deletion detection and fact extraction, off the reply's critical path. Extraction runs on EVERY reply, same as the Snapchat engine path; the old "every 4th message" cadence silently dropped one-off facts ("my name is X") from short conversations. The extractor dedupes against stored facts and returns {} when there is nothing new, so the cost is one small-model call per reply, it just no longer happens where the user can feel it."""
+    if conversation.ignored_slash(prompt):
+        return
     uid = author.id
     try:
         current_mem = bot._memory_cache.get(uid, {})
@@ -3819,6 +3830,9 @@ async def _update_memory_after_reply(author, prompt, response):
 
 async def generate_response_and_reply(message, prompt, history, image_url=None, wait_time=0, bypass_cooldown=False, bypass_typing=False, update_memory=True):
     if not companion_memory.message_allowed(message):
+        return None
+    if conversation.ignored_chat_message(message) or conversation.ignored_slash(prompt):
+        set_reply_state(message.author.id, "skipped", reason="slash commands are disabled")
         return None
     uid = message.author.id
     # Every model call made while writing this reply is tagged with whose
@@ -4141,6 +4155,10 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
             response = random.choice(refusal_fallbacks())
 
     if not response:
+        return None
+
+    if conversation.ignored_chat_message(message):
+        set_reply_state(message.author.id, "skipped", reason="slash commands are disabled")
         return None
 
     response = strip_meta(response).replace("\u2014", "").replace("\u2013", "")
@@ -4783,6 +4801,8 @@ async def on_message(message):
     if not companion_memory.message_allowed(message):
         return
     _log_dm(message)
+    if conversation.ignored_chat_message(message):
+        return
     if message.author.id == bot.selfbot_id:
         if in_server(message.channel) and _server_can_reply(message) and not message.content.startswith(PREFIX):
             _get_server_chat().observe(message)
@@ -4819,7 +4839,7 @@ async def on_message(message):
             if _w is not None and (_ref == _w.id or not _pending):
                 bot.server_waiting.pop(message.channel.id, None)
                 emit_chat_event({"t": "done", "uid": f"ch{message.channel.id}"})
-        if message.content.startswith(PREFIX):
+        if conversation.commands_enabled() and message.content.startswith(PREFIX):
             await bot.process_commands(message)
         return
 
@@ -4935,7 +4955,7 @@ async def on_message(message):
             set_reply_state(message.author.id, "skipped", reason="you paused replies to them")
         return
 
-    if message.content.startswith(PREFIX) and message.author.id == OWNER_ID:
+    if conversation.commands_enabled() and message.content.startswith(PREFIX) and message.author.id == OWNER_ID:
         await bot.process_commands(message)
         return
 
@@ -5028,6 +5048,8 @@ async def process_message_queue(batch_key):
         try:
             while bot.message_queues.get(batch_key):
                 message = bot.message_queues[batch_key].popleft()
+                if conversation.ignored_chat_message(message):
+                    continue
                 current_time = time.time()
                 message_age = current_time - message.created_at.timestamp()
 
@@ -5067,6 +5089,9 @@ async def process_message_queue(batch_key):
                         collected_any = False
                         while bot.message_queues[batch_key]:
                             next_message = bot.message_queues[batch_key][0]
+                            if conversation.ignored_chat_message(next_message):
+                                bot.message_queues[batch_key].popleft()
+                                continue
                             if not next_message.content.startswith(PREFIX):
                                 next_message = bot.message_queues[batch_key].popleft()
                                 bot.user_message_batches[batch_key]["messages"].append(next_message)
@@ -5163,6 +5188,8 @@ async def process_message_queue(batch_key):
 
 
 async def load_extensions():
+    if not conversation.commands_enabled():
+        return
     # Bundled modules aren't on disk when frozen, use an explicit list.
     if getattr(sys, "frozen", False):
         cog_modules = ["app.cogs.general", "app.cogs.management", "app.cogs.error_handler"]

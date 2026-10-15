@@ -19,6 +19,7 @@ os.environ["LLMSELFBOT_DATA_DIR"] = SANDBOX.name
 
 import yaml
 
+from app.utils import conversation
 from app.utils import relationships as social
 from app.utils.server_chat import ServerChat
 from scripts.setup_agent_g import build_config
@@ -133,6 +134,7 @@ class ServerConversations(unittest.IsolatedAsyncioTestCase):
         )
         seen, vocabulary_seen = [], []
         namespace = {
+            "conversation": conversation,
             "discord": discord, "bot": bot, "companion_memory": types.SimpleNamespace(
                 message_allowed=lambda m: True, settings=lambda: {"enabled": True}),
             "_log_dm": lambda m: None, "_cache_author": lambda a: None,
