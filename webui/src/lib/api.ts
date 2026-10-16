@@ -233,6 +233,7 @@ export const api = {
     return request(`/api/chats${s ? `?${s}` : ""}`);
   },
   servers: (target: string) => request(`/api/servers?target=${encodeURIComponent(target)}`),
+  serverPending: (target: string, fresh = false) => request(`/api/servers/pending?target=${encodeURIComponent(target)}${fresh ? "&fresh=true" : ""}`),
   serverChannels: (guild: string, target: string) => request(`/api/servers/${encodeURIComponent(guild)}/channels?target=${encodeURIComponent(target)}`),
   serverInvite: (invite: string, target: string) => request("/api/servers/invite", { method: "POST", body: JSON.stringify({ invite, target }) }),
   serverJoin: (invite: string, guild_id: string, target: string) => request("/api/servers/join", { method: "POST", body: JSON.stringify({ invite, guild_id, target }) }),

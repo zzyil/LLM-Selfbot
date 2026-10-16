@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from app.core import ipc
 from app.utils.paths import DATA_DIR
+from app.utils.channel_conversations import channel_row, is_channel, separate
 # connect_raw() instead of a bare sqlite3.connect(): a plain connection sets no busy_timeout, so these queries failed with "database is locked" rather than waiting whenever a bot runner happened to be writing.
 from app.utils.db import connect_raw
 
@@ -91,15 +92,17 @@ def _snap_number(tgt) -> int:
 
 
 # What a server conversation's row carries beyond a person's: see server_row() in the runner.
-_ROW_EXTRA = ("kind", "channel_id", "author_id", "where")
+_ROW_EXTRA = ("kind", "channel_id", "author_id", "where", "channel_name", "guild_id", "guild_name", "latest_author", "author")
 
 
 def apply_event(body: dict, evt: dict) -> dict:
     """One event applied to a waiting-list body, returning a new body. Never mutates the one passed in: this runs on a supervisor reader thread while the event loop may be serialising the same dict for a response."""
     kind = evt.get("t")
     uid = str(evt.get("uid", ""))
-    users = list(body.get("users") or [])
-    out = dict(body)
+    contacts, channels = separate(body.get("users") or [], body.get("channels") or [])
+    field = "channels" if is_channel(evt) else "users"
+    users = channels if field == "channels" else contacts
+    out = {**body, "users": contacts, "channels": channels}
     if kind == "meta":
         out["paused"] = bool(evt.get("paused"))
         out["cooldown_until"] = evt.get("cooldown_until") or 0
@@ -110,10 +113,11 @@ def apply_event(body: dict, evt: dict) -> dict:
             users.pop(idx)
     elif kind == "state" and idx >= 0:
         users[idx] = {**users[idx], "state": evt.get("state")}
-    elif kind == "ignored" and any(str(u.get("id")) == uid or str(u.get("author_id") or "") == uid for u in users):
-        # a person's server rows too: the bot is off for them wherever they ask
-        users = [{**u, "ignored": bool(evt.get("ignored"))}
-                 if str(u.get("id")) == uid or str(u.get("author_id") or "") == uid else u for u in users]
+    elif kind == "ignored":
+        for key in ("users", "channels"):
+            out[key] = [{**u, "ignored": bool(evt.get("ignored"))}
+                        if str(u.get("id")) == uid or str(u.get("author_id") or "") == uid else u for u in out[key]]
+        return out
     elif kind == "payload" and idx >= 0:
         # The whole message, fetched on request for a row that only had its text: same message, so no count change.
         users[idx] = {**users[idx], **{k: evt[k] for k in _MSG_KEYS if k in evt}}
@@ -127,6 +131,9 @@ def apply_event(body: dict, evt: dict) -> dict:
         if evt.get("kind") == "server":
             # someone else may be the one asking in that channel now
             fresh.update({k: evt[k] for k in (*_ROW_EXTRA, "name", "avatar") if k in evt})
+            if "latest_author" not in evt and evt.get("author_id"):
+                fresh["latest_author"] = {"id": str(evt["author_id"]), "name": evt.get("name", ""), "avatar": evt.get("avatar", "")}
+                fresh["author"] = evt.get("author") or fresh["latest_author"]
         if idx >= 0:
             # The same message seen twice (a sweep that already had it) is not a second one.
             again = bool(evt.get("mid")) and users[idx].get("mid") == evt.get("mid")
@@ -142,7 +149,7 @@ def apply_event(body: dict, evt: dict) -> dict:
                           **{k: evt[k] for k in _ROW_EXTRA if k in evt}})
     else:
         return body
-    out["users"] = users
+    out[field] = [channel_row(row) for row in users] if field == "channels" else users
     return out
 
 
@@ -179,7 +186,7 @@ async def _chats_payload(tgt, fresh: bool = False) -> dict:
             if hit:
                 return hit["body"]
             raise HTTPException(status_code=504, detail="runner did not respond")
-        users = _stringify_ids(result.get("users", []), "id")
+        users, channels = separate(_stringify_ids(result.get("users", []), "id"), result.get("channels", []))
         if isinstance(tgt, str) and tgt.startswith("snap"):
             from app.utils import snappeople
             n = _snap_number(tgt)
@@ -198,6 +205,7 @@ async def _chats_payload(tgt, fresh: bool = False) -> dict:
                 u["name"] = meta.get("display_name") or meta.get("username") or u.get("name")
         body = {
             "users": users,
+            "channels": channels,
             "target": tgt,
             "truncated": bool(result.get("truncated")),
             "paused": result.get("paused", False),
@@ -237,7 +245,9 @@ async def warm_chats() -> None:
 @router.get("/api/chats")
 async def chats(request: Request, target: str = "", fresh: bool = False):
     tgt = _resolve_target(request, target)
-    return await _chats_payload(tgt, fresh=fresh)
+    body = await _chats_payload(tgt, fresh=fresh)
+    users, _ = separate(body.get("users", []), body.get("channels", []))
+    return {key: value for key, value in {**body, "users": users}.items() if key != "channels"}
 
 
 @router.get("/api/chats/archive")
@@ -245,7 +255,8 @@ def archive(request: Request, limit: int = 40, target: str = ""):
     """Conversations that have already been dealt with. The waiting list answers "who needs me", and then a conversation vanishes from it the moment it is answered, which leaves no way to look back at someone you spoke to an hour ago. Read from the message log rather than asked over IPC: it survives restarts, covers every account, and costs a local query instead of a round trip to a bot that might be busy.
 
     With a target, one account's only: a Discord account's people, or a Snapchat account's chats (its own log, by
-    chat id, named as Snapchat names them). Rows from before the log knew its account count as the first one's."""
+    chat id, named as Snapchat names them). Discord rows come from actual DM transcripts, so server-only
+    members in reply statistics cannot appear here. Legacy Snapchat rows without an account count as the first one's."""
     # Plain def: it only reads sqlite, and as async it did that on the event loop every page shares, during the startup warm-up of every tab.
     tgt = _resolve_target(request, target) if target else None
     snap = isinstance(tgt, str) and tgt.startswith("snap")
@@ -272,21 +283,22 @@ def archive(request: Request, limit: int = 40, target: str = ""):
                     """,
                     (n, n, cap)).fetchall()
             else:
-                where = "WHERE m.account = ? OR (m.account IS NULL AND ? = 1)" if n else ""
+                where = "WHERE m.account = ?" if n else "WHERE m.account BETWEEN 1 AND 999"
                 rows = conn.execute(
                     f"""
-                    SELECT m.user_id,
-                           COALESCE(us.username, m.username) AS name,
+                    SELECT m.uid,
+                           COALESCE(us.username, m.uid) AS name,
                            COUNT(*)  AS total,
                            MAX(m.ts) AS last_ts
-                    FROM message_log m
-                    LEFT JOIN user_stats us ON us.user_id = m.user_id
+                    FROM chat_log m
+                    LEFT JOIN user_stats us ON CAST(us.user_id AS TEXT) = m.uid
                     {where}
-                    GROUP BY m.user_id
+                    AND m.uid NOT LIKE 'ch%'
+                    GROUP BY m.uid
                     ORDER BY last_ts DESC
                     LIMIT ?
                     """,
-                    ((n, n, cap) if n else (cap,))).fetchall()
+                    ((n, cap) if n else (cap,))).fetchall()
         except sqlite3.OperationalError:
             rows = []          # nothing has spoken to this install yet
 
@@ -1271,3 +1283,11 @@ async def server_watch(request: Request):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return await _server_action(request, body.get("target"), "servers_watch", {"channel_id": channel})
+
+
+@router.get("/api/servers/pending")
+async def server_pending(request: Request, target: str = "", fresh: bool = False):
+    tgt = _server_target(request, target)
+    body = await _chats_payload(tgt, fresh=fresh)
+    _, channels = separate(body.get("users", []), body.get("channels", []))
+    return {key: value for key, value in {**body, "channels": channels}.items() if key != "users"}

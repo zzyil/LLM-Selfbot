@@ -185,5 +185,32 @@ check("an event for someone not listed changes nothing", u === base);
   check("the account's native server messages remain on its own side", get(chats.conversations)[key].messages[1].mine === true);
 }
 
+// Channel reply queues and contact reply queues have independent membership and state.
+{
+  const chats = await import("../webui/src/lib/chats.ts");
+  const { api } = await import("../webui/src/lib/api.ts");
+  const get = (store) => { let value; store.subscribe((v) => (value = v))(); return value; };
+  const target = "discord_1";
+  chats.chatCache.set({ [target]: { users: [{ id: "42", name: "DM contact", count: 1, snippet: "DM", state: { state: "waiting", since: 1 } }], fetched: 1, loading: false, error: "" } });
+  chats.serverChannelCache.set({ [target]: { channels: [], fetched: 1, loading: false, error: "" } });
+  const event = { t: "msg", target, uid: "ch555", id: "ch555", kind: "server", channel_id: "555", channel_name: "general",
+                  guild_id: "999", guild_name: "Community", author_id: "42", name: "#general", where: "#general · Community", mid: "500", snippet: "hello" };
+  chats.applyEvent(event);
+  chats.applyEvent({ ...event, author_id: "43", mid: "501", latest_author: { id: "43", name: "Another member" } });
+  chats.applyEvent({ t: "state", target, uid: "ch555", state: { state: "writing", since: 2 } });
+  let queue = get(chats.serverChannelCache)[target].channels;
+  check("new speakers stay in one channel conversation", queue.length === 1 && queue[0].id === "ch555" && queue[0].name === "#general" && queue[0].latest_author.name === "Another member");
+  check("channel progress does not change a contact's DM state", get(chats.chatCache)[target].users.length === 1 && get(chats.chatCache)[target].users[0].state.state === "waiting" && queue[0].state.state === "writing");
+  chats.applyEvent({ t: "done", target, uid: "ch555" });
+  check("answering a channel leaves the contact waiting", get(chats.serverChannelCache)[target].channels.length === 0 && get(chats.chatCache)[target].users.length === 1);
+  const real = api.reply, asked = [];
+  api.reply = async (id) => { asked.push(id); return { success: true }; };
+  // A stale client cache from before the category split still cannot include channels in Reply to all.
+  chats.chatCache.set({ [target]: { users: [{ id: "42", name: "DM", count: 1, snippet: "hi" }, { id: "ch555", kind: "server", count: 1, snippet: "channel" }], fetched: Date.now(), loading: false, error: "" } });
+  await chats.sendReplyAll(target);
+  check("contact Reply to all excludes stale server rows", asked.join() === "42", asked.join());
+  api.reply = real;
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

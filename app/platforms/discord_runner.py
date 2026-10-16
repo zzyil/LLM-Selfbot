@@ -857,39 +857,50 @@ async def _announce_command(ctx):
 bot.add_listener(_announce_command, "on_command")
 
 
-def set_reply_state(uid, state, eta=None, reason=""):
-    """Record where a person's reply is. See bot.reply_state. A server conversation waiting on them shows it too:
-    its row is the channel's, but the reply in progress is still theirs."""
+def set_reply_state(uid, state, eta=None, reason="", channel_id=None):
+    """DM progress belongs to a person; server progress belongs to one channel."""
     try:
         st = {"state": state, "since": time.time(), "eta": eta, "reason": reason}
-        bot.reply_state[int(uid)] = st
-        emit_chat_event({"t": "state", "uid": str(uid), "state": st})
-        for _cid, _sm in list(getattr(bot, "server_waiting", {}).items()):
-            if _sm.author.id == int(uid):
-                emit_chat_event({"t": "state", "uid": f"ch{_cid}", "state": st})
+        if channel_id is not None:
+            states = getattr(bot, "channel_reply_state", None)
+            if states is None:
+                states = bot.channel_reply_state = {}
+            states[int(channel_id)] = st
+            emit_chat_event({"t": "state", "uid": f"ch{channel_id}", "state": st})
+        else:
+            bot.reply_state[int(uid)] = st
+            emit_chat_event({"t": "state", "uid": str(uid), "state": st})
     except Exception:
         pass
 
 
 def server_row(m) -> dict:
-    """A server message as a Chats row: the channel is the conversation, the person who wrote is who it is with."""
+    """A channel conversation with the latest speaker kept as message metadata."""
     a = m.author
     guild = getattr(getattr(m, "guild", None), "name", "") or ""
     where = f"#{getattr(m.channel, 'name', 'channel')}" + (f" \u00b7 {guild}" if guild else "")
     txt = _preview_text(m)
     return {
         "id": f"ch{m.channel.id}", "kind": "server", "channel_id": str(m.channel.id), "author_id": str(a.id),
-        "name": getattr(a, "global_name", None) or getattr(a, "display_name", None) or a.name,
-        "username": a.name, "where": where,
-        "avatar": str(a.display_avatar.url) if getattr(a, "display_avatar", None) else "",
+        "name": f"#{getattr(m.channel, 'name', 'channel')}", "username": "", "where": where, "avatar": "",
+        "channel_name": getattr(m.channel, "name", "channel"), "guild_id": str(m.guild.id), "guild_name": guild,
+        "latest_author": {"id": str(a.id), "name": getattr(a, "display_name", None) or a.name,
+                          "avatar": str(a.display_avatar.url) if getattr(a, "display_avatar", None) else ""},
+        "author": {"id": str(a.id), "name": getattr(a, "display_name", None) or a.name,
+                   "avatar": str(a.display_avatar.url) if getattr(a, "display_avatar", None) else ""},
         "snippet": (txt[:60] + "\u2026") if len(txt) > 60 else txt,
         "ts": m.created_at.timestamp(), "ignored": a.id in bot.ignore_users,
         **_message_payload(m),
     }
 
 
-def clear_reply_state(uid):
-    """They have been answered: off the waiting list."""
+def clear_reply_state(uid, channel_id=None):
+    """Clear only the conversation that was answered."""
+    if channel_id is not None:
+        getattr(bot, "channel_reply_state", {}).pop(int(channel_id), None)
+        bot.server_waiting.pop(int(channel_id), None)
+        emit_chat_event({"t": "done", "uid": f"ch{channel_id}"})
+        return
     try:
         bot.reply_state.pop(int(uid), None)
         bot.waiting_msgs.pop(int(uid), None)
@@ -1672,6 +1683,7 @@ async def _tg_ipc_loop():
             _write_result(cmd_id, {"ok": False, "success": False, "dropped": True,
                                    "reason": "that channel is not available to this account any more"})
             bot.server_waiting.pop(cid, None)
+            getattr(bot, "channel_reply_state", {}).pop(cid, None)
             return
         if cmd == "chat_message":
             if waiting is None:
@@ -1699,15 +1711,14 @@ async def _tg_ipc_loop():
         elif cmd == "cancel_reply":
             stopped = _stop_manual_reply(f"ch{cid}")
             if waiting is not None and (cancel_pending_reply(waiting.author.id, cid) or stopped):
-                set_reply_state(waiting.author.id, "skipped", reason="you cancelled the reply")
+                set_reply_state(waiting.author.id, "skipped", reason="you cancelled the reply", channel_id=waiting.channel.id if getattr(waiting, "guild", None) is not None else None)
             _write_result(cmd_id, {"ok": True, "stopped": stopped})
         elif cmd == "reply_user":
             if waiting is None:
                 _write_result(cmd_id, {"success": False, "dropped": True, "reason": "nothing is waiting there any more"})
                 return
             if await _answered_since(waiting):
-                bot.server_waiting.pop(cid, None)
-                emit_chat_event({"t": "done", "uid": f"ch{cid}"})
+                clear_reply_state(waiting.author.id, channel_id=cid)
                 _write_result(cmd_id, {"success": False, "dropped": True,
                                        "reason": "already answered, the bot has spoken there since"})
                 return
@@ -1721,21 +1732,20 @@ async def _tg_ipc_loop():
             if not any(turn.get("content") == combined for turn in history):
                 history.append({"role": "user", "content": combined})
             bot.message_history[hk] = history
-            set_reply_state(waiting.author.id, "writing")
+            set_reply_state(waiting.author.id, "writing", channel_id=waiting.channel.id if getattr(waiting, "guild", None) is not None else None)
             resp = await generate_response_and_reply(waiting, combined, history, bypass_cooldown=True, bypass_typing=True)
             if resp:
                 bot.message_history[hk].append({"role": "assistant", "content": resp})
-                bot.server_waiting.pop(cid, None)
-                emit_chat_event({"t": "done", "uid": f"ch{cid}"})
+                clear_reply_state(waiting.author.id, channel_id=cid)
                 _write_result(cmd_id, {"success": True})
             elif (_why_not := ai_module.unavailable_now()):
                 # No model can reply right now: the reason, said once already, not a line for each channel.
-                set_reply_state(waiting.author.id, "failed", reason=_why_not)
+                set_reply_state(waiting.author.id, "failed", reason=_why_not, channel_id=waiting.channel.id if getattr(waiting, "guild", None) is not None else None)
                 _write_result(cmd_id, {"success": False, "retryable": True, "reason": _why_not})
             else:
                 log_error("Reply", f"No reply sent in #{getattr(ch, 'name', cid)}: the model returned nothing "
                                    f"or the send was refused. It stays on the waiting list.")
-                set_reply_state(waiting.author.id, "failed", reason="no reply was generated, see the log")
+                set_reply_state(waiting.author.id, "failed", reason="no reply was generated, see the log", channel_id=waiting.channel.id if getattr(waiting, "guild", None) is not None else None)
                 _write_result(cmd_id, {"success": False, "retryable": True, "reason": "no reply was generated"})
         elif cmd == "react":
             await _react_on(ch, cmd_id, payload)
@@ -1763,6 +1773,7 @@ async def _tg_ipc_loop():
             bot.last_global_send = time.time()
             bot.message_history.setdefault(f"ch-{cid}", []).append({"role": "assistant", "content": text})
             bot.server_waiting.pop(cid, None)
+            getattr(bot, "channel_reply_state", {}).pop(cid, None)
             emit_chat_event({"t": "sent", "uid": f"ch{cid}", "ts": sent.created_at.timestamp(), **_message_payload(sent)})
             emit_chat_event({"t": "done", "uid": f"ch{cid}"})
             _write_result(cmd_id, {"ok": True, "mid": str(sent.id), "ts": sent.created_at.timestamp(), "dropped_reply": dropped, **_message_payload(sent)})
@@ -2334,6 +2345,7 @@ async def _tg_ipc_loop():
 
                 elif cmd == "reply_check":
                     users_out = []
+                    channels_out = []
                     seen_ids = set()
 
                     # Pass 1: in-memory history (fast, works mid-session)
@@ -2342,6 +2354,9 @@ async def _tg_ipc_loop():
                             continue
                         try:
                             uid = int(hk.split("-")[0])
+                            _history_channel = bot.get_channel(int(hk.split("-")[1]))
+                            if not isinstance(_history_channel, discord.DMChannel):
+                                continue
                             if uid in seen_ids or uid in _blocked_users:
                                 continue
                             seen_ids.add(uid)
@@ -2465,6 +2480,8 @@ async def _tg_ipc_loop():
                             # the bot has the last word there already (a reply that did not clear this row): not waiting
                             try:
                                 _rch = bot.get_channel(int(_row.get("channel_id") or 0))
+                                if _rch is not None and not isinstance(_rch, discord.DMChannel):
+                                    continue
                                 _rlast = _rch._state._get_message(_rch.last_message_id) if _rch is not None and _rch.last_message_id else None
                                 if _rlast is not None and _rlast.author.id == _selfbot_id:
                                     continue
@@ -2493,10 +2510,10 @@ async def _tg_ipc_loop():
                             _srow = server_row(_sm)
                             _sdue = (bot.user_message_batches.get(f"{_sm.author.id}-{_scid}") or {}).get("reply_at")
                             _srow.update({"count": 1, "reply_at": _sdue or None})
-                            _sst = bot.reply_state.get(_sm.author.id)
+                            _sst = getattr(bot, "channel_reply_state", {}).get(_scid)
                             if _sst:
                                 _srow["state"] = _sst
-                            users_out.append(_srow)
+                            channels_out.append(_srow)
                         except Exception:
                             continue
 
@@ -2519,6 +2536,7 @@ async def _tg_ipc_loop():
                             pass
                     _write_result(cmd_id, {
                         "users": users_out,
+                        "channels": channels_out,
                         # true when the DM sweep hit its cap, so the panel can say the list is the most recent N rather than all
                         "truncated": _truncated,
                         "paused": getattr(bot, "paused", False),
@@ -2570,6 +2588,8 @@ async def _tg_ipc_loop():
                         try:
                             uid = int(hk.split("-")[0])
                             cid = int(hk.split("-")[1])
+                            if not isinstance(bot.get_channel(cid), discord.DMChannel):
+                                continue
                             if uid in seen: continue
                             seen.add(uid)
                             _ra_candidates.append((uid, cid, hk))
@@ -3872,7 +3892,7 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
     if not companion_memory.message_allowed(message):
         return None
     if conversation.ignored_chat_message(message) or conversation.ignored_slash(prompt):
-        set_reply_state(message.author.id, "skipped", reason="slash commands are disabled")
+        set_reply_state(message.author.id, "skipped", reason="slash commands are disabled", channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
         return None
     uid = message.author.id
     # Every model call made while writing this reply is tagged with whose
@@ -3889,7 +3909,7 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
     # user asking for it now, so they ignore a stale cancel.
     if not bypass_cooldown and uid in getattr(bot, "cancelled_replies", ()):
         bot.cancelled_replies.discard(uid)
-        set_reply_state(uid, "skipped", reason="you cancelled the reply")
+        set_reply_state(uid, "skipped", reason="you cancelled the reply", channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
         return None
     # No model can reply right now (the one set up will not load): it is not asked again for every message waiting,
     # each failing the same way and each logged again. The messages stay on the waiting list; said once.
@@ -3897,7 +3917,7 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
     if _why_not:
         if ai_module.say_once(f"waiting {_why_not}"):
             log_system(f"Not replying for now: {_why_not}. Messages wait until a model can reply.")
-        set_reply_state(uid, "failed", reason=_why_not)
+        set_reply_state(uid, "failed", reason=_why_not, channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
         return None
     if uid not in bot._memory_cache:
         bot._memory_cache[uid] = get_memory(uid)
@@ -4159,7 +4179,7 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
             # One that will not load fails the same way however often it is asked: it has been said (app/utils/ai.py),
             # and asking twice more for this message only logged it twice more.
             if isinstance(e, ai_module.ModelWontLoad):
-                set_reply_state(uid, "failed", reason=error_msg)
+                set_reply_state(uid, "failed", reason=error_msg, channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
                 return None
             if "Rate limit reached" in error_msg or "rate_limit_exceeded" in error_msg:
                 _was_rate_limited = True
@@ -4214,7 +4234,7 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
         return None
 
     if conversation.ignored_chat_message(message):
-        set_reply_state(message.author.id, "skipped", reason="slash commands are disabled")
+        set_reply_state(message.author.id, "skipped", reason="slash commands are disabled", channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
         return None
 
     response = strip_meta(response).replace("\u2014", "").replace("\u2013", "")
@@ -4292,7 +4312,7 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
             audio_chunks = await generate_voice_message(spoken_response)
             if audio_chunks:
                 # the bot's own reply going out, like text: a message of yours during it would otherwise look like you answering them yourself
-                set_reply_state(message.author.id, "sending")
+                set_reply_state(message.author.id, "sending", channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
                 for i, audio_bytes in enumerate(audio_chunks):
                     reply_msg = message if i == 0 else None
                     await send_voice_message(
@@ -4343,17 +4363,17 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
             _global_cooldown_gap = bot.active_chat.wait(_global_cooldown_gap, message)
         if _time_since_last < _global_cooldown_gap:
             set_reply_state(message.author.id, "cooldown",
-                            eta=time.time() + (_global_cooldown_gap - _time_since_last))
+                            eta=time.time() + (_global_cooldown_gap - _time_since_last), channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
             await asyncio.sleep(_global_cooldown_gap - _time_since_last)
 
     if not bypass_cooldown and message.author.id in bot.cancelled_replies:
         bot.cancelled_replies.discard(message.author.id)
-        set_reply_state(message.author.id, "skipped", reason="you cancelled the reply")
+        set_reply_state(message.author.id, "skipped", reason="you cancelled the reply", channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
         log_system(f"Reply to {message.author.name} cancelled from the panel, not sent")
         return None
 
     # Waiting its turn behind any other reply being sent, then sending.
-    set_reply_state(message.author.id, "queued" if bot.global_send_lock.locked() else "sending")
+    set_reply_state(message.author.id, "queued" if bot.global_send_lock.locked() else "sending", channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
 
     # small pre-lock jitter: prevents perfectly serialized sends from looking mechanical when multiple users are active at the same time
     await asyncio.sleep(random.uniform(0.1, 1.2))
@@ -4361,9 +4381,9 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
         # waited its turn behind other replies; you may have answered them yourself meanwhile
         if not bypass_cooldown and message.author.id in bot.cancelled_replies:
             bot.cancelled_replies.discard(message.author.id)
-            set_reply_state(message.author.id, "skipped", reason="you answered them yourself")
+            set_reply_state(message.author.id, "skipped", reason="you answered them yourself", channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
             return None
-        set_reply_state(message.author.id, "sending")
+        set_reply_state(message.author.id, "sending", channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
         pics_cfg = config["bot"].get("pictures") or {}
         if _available_pics and pics_cfg.get("enabled", True):
             all_pics = _available_pics
@@ -4476,7 +4496,7 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
 
                 async def _send_chunk(chunk=chunk):
                     if not update_memory and not _server_can_reply(message):
-                        set_reply_state(message.author.id, "skipped", reason="server paused or access changed")
+                        set_reply_state(message.author.id, "skipped", reason="server paused or access changed", channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
                         raise asyncio.CancelledError
                     if _server_chat is not None:
                         _server_chat.mark_sending(message.channel.id)
@@ -4845,8 +4865,8 @@ def _server_reply_scheduled(message, delay):
     if getattr(bot, "active_chat", None) is not None:
         bot.active_chat.touch(message)
     bot.server_waiting[message.channel.id] = message
-    set_reply_state(message.author.id, "waiting", eta=time.time()+delay)
     emit_chat_event({"t": "msg", "uid": f"ch{message.channel.id}", **server_row(message)})
+    set_reply_state(message.author.id, "waiting", eta=time.time()+delay, channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
 
 
 async def _seed_server_chat(first_message):
@@ -4863,14 +4883,14 @@ async def _learn_in_server(author, content):
 async def _reply_in_server(message, history, directed):
     key = history_key(message)
     bot.message_history[key] = history
-    set_reply_state(message.author.id, "writing")
+    set_reply_state(message.author.id, "writing", channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
     image_url = (message.attachments[0].url if message.attachments
                  and not (message.flags.value & (1 << 13)) else _extract_image_url_from_message(message))
     response = await generate_response_and_reply(
         message, message.content or "[attachment]", history, image_url=image_url, update_memory=False,
         server_initiated=not directed)
     if response:
-        clear_reply_state(message.author.id)
+        clear_reply_state(message.author.id, channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
         if directed:
             task = asyncio.create_task(companion_memory.learn_interaction(
                 message.author.id, companion_memory.discord_scope(message), message.id,
@@ -4878,7 +4898,7 @@ async def _reply_in_server(message, history, directed):
             _memory_tasks.add(task)
             task.add_done_callback(_relationship_update_done)
     else:
-        set_reply_state(message.author.id, "failed", reason="no server reply was delivered")
+        set_reply_state(message.author.id, "failed", reason="no server reply was delivered", channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
     if bot.server_waiting.get(message.channel.id) is message:
         bot.server_waiting.pop(message.channel.id, None)
         emit_chat_event({"t": "done", "uid": f"ch{message.channel.id}"})
@@ -4935,6 +4955,7 @@ async def on_message(message):
             # the answer to it (a reply to that message), or with nothing else lined up in the channel
             if _w is not None and (_ref == _w.id or not _pending):
                 bot.server_waiting.pop(message.channel.id, None)
+                getattr(bot, "channel_reply_state", {}).pop(message.channel.id, None)
                 emit_chat_event({"t": "done", "uid": f"ch{message.channel.id}"})
         if conversation.commands_enabled() and message.content.startswith(PREFIX):
             await bot.process_commands(message)
@@ -5049,7 +5070,7 @@ async def on_message(message):
 
     if message.author.id in bot.paused_users:
         if _is_dm:
-            set_reply_state(message.author.id, "skipped", reason="you paused replies to them")
+            set_reply_state(message.author.id, "skipped", reason="you paused replies to them", channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
         return
 
     if conversation.commands_enabled() and message.content.startswith(PREFIX) and message.author.id == OWNER_ID:
@@ -5085,7 +5106,7 @@ async def on_message(message):
         ):
             log_system(f"Ignored message from {message.author.name} (chance skip)")
             if _is_dm:
-                set_reply_state(user_id, "skipped", reason="left unanswered on purpose (the ignore chance)")
+                set_reply_state(user_id, "skipped", reason="left unanswered on purpose (the ignore chance)", channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
             return
 
         if user_id in bot.user_cooldowns:
@@ -5093,7 +5114,7 @@ async def on_message(message):
             if current_time < cooldown_end:
                 if _is_dm:
                     set_reply_state(user_id, "skipped", eta=cooldown_end,
-                                    reason="they sent a burst of messages, cooling down")
+                                    reason="they sent a burst of messages, cooling down", channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
                 return
             else:
                 del bot.user_cooldowns[user_id]
@@ -5108,7 +5129,7 @@ async def on_message(message):
             bot.user_cooldowns[user_id] = current_time + COOLDOWN_DURATION
             if _is_dm:
                 set_reply_state(user_id, "skipped", eta=current_time + COOLDOWN_DURATION,
-                                reason="they sent a burst of messages, cooling down")
+                                reason="they sent a burst of messages, cooling down", channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
             return
 
         if getattr(bot, "active_chat", None) is not None:
@@ -5134,7 +5155,7 @@ async def on_message(message):
             asyncio.create_task(process_message_queue(batch_key))
     elif _is_dm:
         set_reply_state(user_id, "skipped",
-                        reason="the account is paused" if bot.paused else "set not to reply in DMs")
+                        reason="the account is paused" if bot.paused else "set not to reply in DMs", channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
 
 
 async def process_message_queue(batch_key):
@@ -5172,7 +5193,7 @@ async def process_message_queue(batch_key):
                     wait_time = 0 if priority else get_batch_wait_time(
                         server=in_server(message.channel), message=message)
                     bot.user_message_batches[batch_key]["reply_at"] = current_time + wait_time
-                    set_reply_state(message.author.id, "waiting", eta=current_time + wait_time)
+                    set_reply_state(message.author.id, "waiting", eta=current_time + wait_time, channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
                     channel_name, guild_name = get_channel_context(message)
                     log_received(message.author.name, channel_name, guild_name, wait_time)
                     if not priority:
@@ -5259,13 +5280,13 @@ async def process_message_queue(batch_key):
                         except Exception:
                             pass
 
-                set_reply_state(message_to_reply_to.author.id, "writing")
+                set_reply_state(message_to_reply_to.author.id, "writing", channel_id=message_to_reply_to.channel.id if getattr(message_to_reply_to, "guild", None) is not None else None)
                 response = await generate_response_and_reply(message_to_reply_to, combined_content, history, image_url, wait_time=(wait_time + message_age))
                 if not response:
                     set_reply_state(message_to_reply_to.author.id, "failed",
-                                    reason="no reply was generated, see the log")
+                                    reason="no reply was generated, see the log", channel_id=message_to_reply_to.channel.id if getattr(message_to_reply_to, "guild", None) is not None else None)
                 if response:
-                    clear_reply_state(message_to_reply_to.author.id)
+                    clear_reply_state(message_to_reply_to.author.id, channel_id=message_to_reply_to.channel.id if getattr(message_to_reply_to, "guild", None) is not None else None)
                     bot.message_history[key].append({"role": "assistant", "content": response})
                     record_user_message(message_to_reply_to.author.id, message_to_reply_to.author.name,
                                         account=ACCOUNT_INDEX)

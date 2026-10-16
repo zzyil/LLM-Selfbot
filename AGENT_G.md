@@ -98,6 +98,13 @@ previews the community, then joins only when **Join this server** is pressed. Fr
 group DM and guest voice invites are rejected. The character does not discover or
 accept invitations on its own. Joining retains the account's current persona and memory.
 
+**Chats** contains private contact conversations only. **Servers** has a separate
+**Channel replies** queue grouped by server and channel, with each channel's own waiting,
+writing and sending state. Changing speakers updates the latest-message attribution
+without creating a contact or changing that person's DM status. Contact bulk replies and
+past conversations exclude server channels and members seen only in server traffic.
+People and relationships memory still follows the same person across shared communities.
+
 The server picker lists that account's joined communities. Browse text channels by
 category and accessible active threads, read recent messages, scroll back, send text
 or supported attachments, and react with the existing chat controls. Switching servers

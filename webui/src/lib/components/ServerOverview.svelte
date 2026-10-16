@@ -4,11 +4,13 @@
   import { viewPersona } from "../stores";
   import { visiblePoll } from "../poll";
   import { serverMemories, memorySection } from "../server-memory";
-  import { serversFocus } from "../chats";
+  import { serversFocus, serverChannelCache } from "../chats";
   import PersonaScope from "../personas/PersonaScope.svelte";
   import Icon from "./Icon.svelte";
   const memories = $derived(serverMemories($viewPersona || "default"));
   const servers = $derived($memories.data.servers);
+  const accountIds = $derived(new Set(servers.flatMap((s) => s.accounts.map((a) => a.id))));
+  const pending = $derived(Object.entries($serverChannelCache).filter(([id]) => accountIds.has(id)).reduce((n, [, entry]) => n + entry.channels.length, 0));
   const terms = $derived(servers.reduce((n, s) => n + s.terms, 0));
   const disputes = $derived(servers.reduce((n, s) => n + s.disputed, 0));
   const joined = $derived(servers.filter((s) => s.accounts.length).length);
@@ -37,6 +39,7 @@
     <span><b>{joined}</b> connected servers</span>
     <span><b>{terms}</b> learned terms</span>
     <span><b>{channels}</b> observed channels</span>
+    <span><b>{pending}</b> channel replies</span>
     {#if disputes}<span class="text-warn"><b>{disputes}</b> disputed</span>{/if}
   </div>
   <div class="server-controls"><PersonaScope value={$viewPersona || "default"} onchange={(pid) => viewPersona.set(pid)} /><button class="jelly server-open" onclick={browse}>Open servers <Icon name="globe" size={12} /></button><button class="jelly server-open" onclick={open}>Manage memories <Icon name="chevron" size={12} /></button></div>

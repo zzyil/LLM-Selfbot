@@ -27,7 +27,7 @@
   import { toast, motionEnabled } from "../lib/stores";
   import { resource } from "../lib/resource";
   import {
-    chatAccounts, chatCache, chatsFocus, loadChatAccounts, refreshChats,
+    chatAccounts, chatCache, serverChannelCache, chatsFocus, loadChatAccounts, refreshChats, refreshServerChannels, isChannelConversation,
     replying as replyingStore, replyingAll as replyingAllStore, sendReply, sendReplyAll, stopReplyAll,
     replyAllProgress, cancelReply, toggleIgnore, setIgnored, loadMessage, conversations, convKey, loadConversation,
     sendOwnMessage, typingNow, drafts, setDraft, loadDrafts, stagedFiles, loadEarlier, joinConversation,
@@ -96,6 +96,7 @@
   const pastRes = $derived(resource(`chatArchive:${target}`, () => api.chatArchive(100, target), { conversations: [] as Past[] }));
   let pastList = $state<Past[]>([]);
   $effect(() => {
+    if (mode === "servers") return;
     const r = pastRes;
     const stop = r.subscribe((s) => (pastList = s.data.conversations ?? []));
     if (target) r.refresh({ maxAge: 30000, quiet: true });
@@ -112,8 +113,11 @@
   const busy = $derived(replyingAll);
 
   const accounts = $derived(mode === "servers" ? $chatAccounts.filter((a) => a.platform === "discord") : $chatAccounts);
-  const entry = $derived($chatCache[target] ?? { users: [], fetched: 0, loading: false, error: "" });
-  const users = $derived(entry.users);
+  const channelEntry = $derived($serverChannelCache[target]);
+  const entry = $derived(mode === "servers"
+    ? { ...(channelEntry ?? { fetched: 0, loading: false, error: "" }), users: channelEntry?.channels ?? [] }
+    : $chatCache[target] ?? { users: [], fetched: 0, loading: false, error: "" });
+  const users = $derived(entry.users.filter((u) => mode === "servers" ? isChannelConversation(u) : !isChannelConversation(u)));
   const loading = $derived(mode === "servers" ? false : !accounts.length || (!entry.fetched && entry.loading));
   const refreshing = $derived(entry.loading && entry.fetched > 0);
   const current = $derived(accounts.find((a) => a.id === target));
@@ -122,7 +126,7 @@
 
   /** Anyone still waiting is in the list above, so they are not history yet. Nor is anyone ignored. */
   const archived = $derived(
-    pastList.filter((c: Past) => !users.some((u) => u.id === c.id) && !ignoredIds.has(c.id)),
+    pastList.filter((c: Past) => !isChannelConversation(c) && !users.some((u) => u.id === c.id) && !ignoredIds.has(c.id)),
   );
 
   onMount(() => {
@@ -134,7 +138,7 @@
     // no event describes, like messages that arrived while the bot was off.
     const t = setInterval(() => {
       if (document.hidden) return;
-      refreshChats(target, { maxAge: 30000, quiet: true });
+      refreshCurrent({ maxAge: 30000, quiet: true });
       loadFriends();
     }, 45000);
     return () => {
@@ -154,13 +158,15 @@
       }
       if (list.length && !target) target = list[0].id;
       await Promise.all([
-        refreshChats(target, { maxAge: 10000 }),
+        refreshCurrent({ maxAge: 10000 }),
         loadFriends(),
       ]);
     } catch (e: any) {
       loadError = e?.message || "Could not load";
     }
   }
+
+  const refreshCurrent = (options = {}) => mode === "servers" ? refreshServerChannels(target, options) : refreshChats(target, options);
 
   async function loadFriends() {
     if (!target || mode === "servers") return;
@@ -222,7 +228,7 @@
     selectedId = "";
     older = null;
     loadFriends();
-    await refreshChats(id, { maxAge: 10000 });
+    await (mode === "servers" ? refreshServerChannels(id, { maxAge: 10000 }) : refreshChats(id, { maxAge: 10000 }));
   }
 
   // ── Times ──────────────────────────────────────────────────────────────
@@ -281,7 +287,7 @@
     ignoredLoaded = true;
   }
   $effect(() => {
-    if (target) {
+    if (target && mode !== "servers") {
       ignoredLoaded = false;
       loadIgnored();
     }
@@ -867,7 +873,7 @@
   }
 
   // ── Finding someone, or something said, from the list ──────────────────
-  type ListFilter = "all" | "unread" | "needs" | "live" | "answered" | "drafts" | "servers";
+  type ListFilter = "all" | "unread" | "needs" | "live" | "answered" | "drafts";
   let listQuery = $state("");
   let listFilter = $state<ListFilter>("all");
   const listWords = $derived(splitWords(listQuery).map(fold).filter(Boolean));
@@ -886,7 +892,6 @@
     if ((f === "needs" || f === "live") && section !== f) return false;
     if (f === "answered") return false;
     if (f === "drafts" && !hasDraft(u.id)) return false;
-    if (f === "servers" && u.kind !== "server") return false;
     return rowMatches(u.name, u.username, `${u.where ?? ""} ${preview(u)}`);
   }
 
@@ -913,7 +918,6 @@
       { id: "live", label: "Being answered", n: sections.find((s) => s.id === "live")?.rows.length ?? 0 },
       { id: "drafts", label: "Drafts", n: [...live.map((u) => u.id), ...archived.map((c: Past) => c.id)].filter(hasDraft).length },
       { id: "answered", label: "Answered", n: archived.length },
-      { id: "servers", label: "Servers", n: live.filter((u) => u.kind === "server").length },
     ];
     return list.filter((c) => c.id === "all" || c.id === listFilter || c.n > 0);
   });
@@ -1314,7 +1318,7 @@
     || /^\[/.test((u.text ?? u.snippet ?? "").trim());
 </script>
 
-<ErrorNote text={loadError} onretry={() => { loadError = ""; start(); }} />
+<ErrorNote text={loadError || entry.error} onretry={() => { loadError = ""; start(); }} />
 
 <svelte:window onclick={dismiss} onkeydown={onWindowKey} ondragover={guardDrop} ondrop={guardDrop} />
 
@@ -1397,7 +1401,7 @@
   {/if}
 
   <div class="ch-top-actions ml-auto flex shrink-0 items-center gap-2">
-    <div class="relative" data-ignored-panel>
+    {#if mode !== "servers"}<div class="relative" data-ignored-panel>
       <button class="ch-ignored-btn" class:is-open={ignoredOpen} onclick={() => { ignoredOpen = !ignoredOpen; if (ignoredOpen) loadIgnored(); }}
               title="People the bot does not answer" aria-expanded={ignoredOpen}>
         <Icon name="eyeOff" size={13} />Ignored{#if ignoredCount}<b>{ignoredCount}</b>{/if}
@@ -1433,7 +1437,7 @@
         </div>
       {/if}
     </div>
-    <span class="ch-livebadge" title="New messages and every step of a reply show up here as they happen">
+    {/if}<span class="ch-livebadge" title="New messages and every step of a reply show up here as they happen">
       <i class:is-busy={refreshing}></i>{refreshing ? "Checking" : "Live"}
     </span>
     {#if mode !== "servers"}<Button kind={replyingAll ? "ghost" : "good"} onclick={replyAll}
@@ -1582,7 +1586,7 @@
     <!-- ── Who is waiting ───────────────────────────────────────────────── -->
     <div class="ch-left">
       {#if mode === "servers"}
-        <ServerBrowser {target} {selectedId} onselect={selectServer} onclear={clearServerSelection} />
+        <ServerBrowser {target} {selectedId} pending={users} onselect={selectServer} onclear={clearServerSelection} />
       {:else}
       <!-- Find someone, or something someone said: names as you type, and the words of every kept message. Above the
            list rather than in it, so the list scrolls under nothing. -->

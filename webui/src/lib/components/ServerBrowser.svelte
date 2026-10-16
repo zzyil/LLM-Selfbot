@@ -12,7 +12,7 @@
   type Guild = { id: string; name: string; icon: string; members?: number };
   type Channel = { id: string; name: string; category: string; thread: boolean; parent: string;
                    topic: string; can_read: boolean; can_send: boolean; reason: string; slowmode: number };
-  let { target, selectedId, onselect, onclear }: { target: string; selectedId: string; onselect: (channel: ChatUser) => void; onclear: () => void } = $props();
+  let { target, selectedId, pending = [], onselect, onclear }: { target: string; selectedId: string; pending?: ChatUser[]; onselect: (channel: ChatUser) => void; onclear: () => void } = $props();
   let servers = $state<Guild[]>([]);
   let guild = $state("");
   let persona = $state("default");
@@ -29,6 +29,19 @@
   let generation = 0;
   let joinedPending = $state<Guild | null>(null);
   let channelLoading = $state(false);
+  const pendingGroups = $derived([...new Set(pending.map((row) => row.guild_id || row.guild_name || "Server"))]
+    .map((id) => ({ id, name: pending.find((row) => (row.guild_id || row.guild_name || "Server") === id)?.guild_name || "Server",
+                   channels: pending.filter((row) => (row.guild_id || row.guild_name || "Server") === id) })));
+  const stateOf = (row: ChatUser) => ({ waiting: "Waiting to reply", writing: "Writing", sending: "Sending", queued: "Queued",
+    cooldown: "Cooldown", skipped: "Skipped", failed: "Needs attention" }[row.state?.state || ""] || "Awaiting response");
+  async function openPending(row: ChatUser) {
+    const account = target;
+    if (row.guild_id && row.guild_id !== guild) await chooseGuild(row.guild_id);
+    if (target !== account) return;
+    const channel = channels.find((item) => item.id === row.channel_id);
+    if (channel) await open(channel);
+    else error = "This channel is not available in the current server list. Refresh servers and try again.";
+  }
   const current = $derived(servers.find((s) => s.id === guild) ?? joinedPending);
   const groups = $derived.by(() => {
     const rows = channels.filter((c) => `${c.name} ${c.topic} ${c.parent}`.toLowerCase().includes(query.toLowerCase()));
@@ -130,6 +143,16 @@
     </form>
   {/if}
   {#if error}<p class="sb-error" role="alert">{error}</p>{/if}
+  {#if pending.length}
+    <section class="sb-pending" aria-label="Channel reply queue"><h3>Channel replies <span>{pending.length}</span></h3>
+      {#each pendingGroups as group (group.id)}<div class="sb-pending-group"><h4>{group.name}</h4>
+        {#each group.channels as row (row.id)}<button class="sb-pending-row" class:chosen={selectedId === row.id} onclick={() => openPending(row)}>
+          <span class="sb-pending-top"><b>{row.name}</b><span class="sb-status">{stateOf(row)}</span></span>
+          <small>{row.latest_author?.name ? `${row.latest_author.name}: ` : ""}{row.snippet || "Message waiting in this channel"}</small>
+        </button>{/each}
+      </div>{/each}
+    </section>
+  {/if}
   {#if loading && !servers.length}<p class="sb-empty">Loading this account's servers…</p>
   {:else if !servers.length && !joinedPending}<p class="sb-empty">No joined servers yet. Paste an invite with Join server to get started.</p>
   {:else}
@@ -138,13 +161,18 @@
     <label class="sb-search"><Icon name="search" size={12} /><input bind:value={query} placeholder="Find a channel" aria-label="Find a server channel" /></label>
     <div class="sb-channels">
       {#if channelLoading}<p class="sb-empty">Loading channels…</p>{:else if !channels.length}<p class="sb-empty">No readable text channels or active threads. Complete any server verification in Discord, then refresh.</p>{:else if !groups.length}<p class="sb-empty">No matching channels.</p>{/if}
-      {#each groups as group (group.name)}<section><h3>{group.name}</h3>{#each group.channels as channel (channel.id)}<button class="sb-channel" class:chosen={selectedId === `ch${channel.id}`} disabled={!channel.can_read} onclick={() => open(channel)} title={channel.topic || channel.reason || channel.name}><span class="sb-hash">{channel.thread ? "↳" : "#"}</span><span class="sb-channel-name">{channel.name}{#if channel.thread}<small>in #{channel.parent}</small>{/if}</span>{#if !channel.can_send}<Icon name="eye" size={11} />{/if}</button>{/each}</section>{/each}
+      {#each groups as group (group.name)}<section><h3>{group.name}</h3>{#each group.channels as channel (channel.id)}<button class="sb-channel" class:chosen={selectedId === `ch${channel.id}`} disabled={!channel.can_read} onclick={() => open(channel)} title={channel.topic || channel.reason || channel.name}><span class="sb-hash">{channel.thread ? "↳" : "#"}</span><span class="sb-channel-name">{channel.name}{#if channel.thread}<small>in #{channel.parent}</small>{/if}{#if pending.find((row) => row.channel_id === channel.id)}{@const row = pending.find((row) => row.channel_id === channel.id)!}<small class="sb-status">{stateOf(row)}</small>{/if}</span>{#if !channel.can_send}<Icon name="eye" size={11} />{/if}</button>{/each}</section>{/each}
     </div>
     <p class="sb-foot">Text channels and accessible active threads. <a href="#/memory" onclick={() => { viewPersona.set(persona); memorySection.set("servers"); }}>Server memories →</a></p>
   {/if}
 </div>
 
 <style>
+  .sb-pending { border: 1px solid var(--color-edge); border-radius: 12px; padding: 9px; max-height: 230px; overflow: auto; flex-shrink: 0; }
+  .sb-pending h3 { padding: 0 0 8px; display: flex; justify-content: space-between; } .sb-pending h4 { font-size: 11px; color: var(--color-muted); padding: 5px 4px; }
+  .sb-pending-row { display: block; width: 100%; text-align: left; padding: 9px 5px; border-radius: 8px; } .sb-pending-row:hover, .sb-pending-row.chosen { background: color-mix(in srgb, var(--color-accent) 9%, transparent); }
+  .sb-pending-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; } .sb-pending-top b { font-size: 12px; } .sb-status { font-size: 10px; color: var(--color-accent); } .sb-pending-row small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 3px; }
+
   .sb-browser { height: 100%; display: flex; flex-direction: column; min-height: 0; gap: 12px; padding: 12px 6px; } .sb-actions { display: flex; align-items: center; gap: 12px; } h2 { font-size: 14px; font-weight: 600; flex: 1; } .sb-actions button { color: var(--color-faint); } .sb-add { display: flex; align-items: center; gap: 5px; font-size: 11px; white-space: nowrap; }
   .sb-label, .sb-join label { display: block; font-size: 11px; color: var(--color-muted); } select, input { min-width: 0; width: 100%; color: var(--color-ink); background: transparent; font-size: 12px; outline: none; } select, .sb-join input { display: block; padding: 9px; border: 1px solid var(--color-edge); border-radius: 9px; margin-top: 6px; } option { background: var(--color-bg); } .sb-search { display: flex; align-items: center; gap: 8px; padding: 9px; border: 1px solid var(--color-edge); border-radius: 9px; color: var(--color-faint); } .sb-channels { min-height: 0; overflow: auto; flex: 1; } h3 { font-size: 10px; text-transform: uppercase; color: var(--color-faint); letter-spacing: 0.08em; padding: 14px 8px 7px; }
   .sb-channel { display: flex; width: 100%; text-align: left; align-items: center; gap: 9px; padding: 9px; border-radius: 9px; font-size: 12px; color: var(--color-muted); } .sb-channel.chosen, .sb-channel:hover { color: var(--color-accent); background: color-mix(in srgb, var(--color-accent) 10%, transparent); } .sb-channel-name { flex: 1; min-width: 0; overflow-wrap: anywhere; } small { display: block; color: var(--color-faint); font-size: 10px; } .sb-hash { color: var(--color-faint); font-size: 17px; } .sb-empty, .sb-foot, .sb-error { font-size: 11px; line-height: 1.6; padding: 8px; color: var(--color-muted); } .sb-error { color: var(--color-warn); border: 1px solid var(--color-edge); border-radius: 9px; } .sb-foot { font-size: 10px; border-top: 1px solid var(--color-edge); } a { color: var(--color-accent); }

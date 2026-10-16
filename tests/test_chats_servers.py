@@ -26,17 +26,17 @@ print("== a server conversation in the list ==")
 evt = {"t": "msg", "uid": "ch555", "kind": "server", "channel_id": "555", "author_id": "108", "name": "Rayan",
        "avatar": "https://cdn/a.png", "where": "#general · Night Owls", "snippet": "you coming?", "ts": 10, "mid": "1"}
 body = cr.apply_event({"users": []}, evt)
-row = body["users"][0]
+row = body["channels"][0]
 check("a new one arrives as its own row", row["id"] == "ch555" and row["kind"] == "server")
 check("saying where it is and who asked", row["where"].startswith("#general") and row["author_id"] == "108"
-      and row["name"] == "Rayan" and row["avatar"])
+      and row["name"] == "#general" and row["avatar"] == "" and row["latest_author"]["name"] == "Rayan")
 body = cr.apply_event(body, {**evt, "author_id": "109", "name": "Lou", "mid": "2"})
-check("someone else asking in the same channel takes the row over", body["users"][0]["author_id"] == "109"
-      and body["users"][0]["name"] == "Lou" and body["users"][0]["count"] == 2)
+check("someone else asking in the same channel takes the row over", body["channels"][0]["author_id"] == "109"
+      and body["channels"][0]["name"] == "#general" and body["channels"][0]["latest_author"]["name"] == "Lou" and body["channels"][0]["count"] == 2)
 body = cr.apply_event(body, {"t": "ignored", "uid": "109", "ignored": True})
-check("turning the bot off for a person reaches their server row", body["users"][0]["ignored"] is True)
+check("turning the bot off for a person reaches their server row", body["channels"][0]["ignored"] is True)
 body = cr.apply_event(body, {"t": "done", "uid": "ch555"})
-check("and an answer takes it off", body["users"] == [])
+check("and an answer takes it off", body["channels"] == [] and body["users"] == [])
 
 print("\n== the panel passes its id through ==")
 check("a server row's id stays as it is", cr._user_id_for("discord_1", "ch555") == "ch555")
@@ -51,7 +51,7 @@ runner = (ROOT / "app" / "platforms" / "discord_runner.py").read_text(encoding="
 check("a server message that asked for a reply is tracked by channel",
       "bot.server_waiting[channel_id] = message" in runner and '"uid": f"ch{channel_id}"' in runner)
 check("and listed while it waits", "for _scid, _sm in list(bot.server_waiting.items()):" in runner)
-check("the person's reply progress shows on it", 'emit_chat_event({"t": "state", "uid": f"ch{_cid}", "state": st})' in runner)
+check("reply progress is emitted for the channel", '"uid": f"ch{channel_id}", "state": st' in runner and "channel_reply_state" in runner)
 own = runner[runner.index("async def on_message(message):"):]
 own = own[:own.index("# remember who this is")]
 check("a message the account sends there answers it", "bot.server_waiting.pop(message.channel.id, None)" in own
