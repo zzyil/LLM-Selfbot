@@ -908,15 +908,19 @@ def memory_list(request: Request, persona: str = ""):
                 entry["learned_at"] = learned
                 entry["learned"] = key
 
+    from app.utils import member_context
+    member_context.merge_people(users, pid)
     out = []
     for uid, entry in users.items():
         profile = profiles.get(uid) or {}
         entry["display_name"] = profile.get("name", "")
         # A face makes a list of names scannable in a way that a list of names is not.
         entry["avatar"] = profile.get("avatar", "")
-        entry["messages"] = stats.get(uid, {}).get("messages", 0)
-        entry["first_seen"] = stats.get(uid, {}).get("first_seen", 0)
-        entry["last_seen"] = last.get(uid, 0)
+        observed = entry.pop("observed", {})
+        entry["messages"] = max(stats.get(uid, {}).get("messages", 0), observed.get("messages", 0))
+        first = [t for t in (stats.get(uid, {}).get("first_seen", 0), observed.get("first_seen", 0)) if t]
+        entry["first_seen"] = min(first, default=0)
+        entry["last_seen"] = max(last.get(uid, 0), observed.get("last_seen", 0))
         entry["fact_count"] = len(entry["facts"])
         out.append(entry)
     # Snapchat's people (their ids are chat ids, not numbers): named, pictured and counted from what Snapchat's runner
@@ -945,6 +949,24 @@ def memory_list(request: Request, persona: str = ""):
     return {"users": out, "latest": latest}
 
 
+@router.get("/api/relationships")
+def relationships_overview(request: Request, persona: str = ""):
+    from app.utils import configstore, member_context, relationships
+    pid = _memory_persona(persona)
+    data = memory_list(request, persona)
+    people, servers = [], {}
+    for user in data["users"]:
+        if not user["user_id"].isdigit():
+            continue
+        for context in user.get("contexts", []):
+            if context["guild_id"]:
+                servers[context["guild_id"]] = context["guild_name"]
+        people.append({**user, "relationship": user.get("relationship") or relationships.get_relationship(user["user_id"], persona=pid),
+                       "interactions": member_context.interactions(user["user_id"], pid, limit=5)})
+    return {"people": people, "servers": [{"id": gid, "name": name} for gid, name in servers.items()],
+            "learning_enabled": relationships.server_enabled(configstore.effective(pid))}
+
+
 @router.get("/api/memory/{uid}")
 def memory_get(request: Request, uid: str, persona: str = ""):
     # Plain def: the database is read on FastAPI's threadpool, not on the event loop.
@@ -953,8 +975,11 @@ def memory_get(request: Request, uid: str, persona: str = ""):
     key = int(uid) if uid.isdigit() else uid
     from app.utils.relationships import list_relationships
     from app.utils.member_names import aliases
+    from app.utils import member_context
+    contexts = member_context.users(pid).get(str(key), {}).get("contexts", [])
     return {"facts": get_memory(key, persona=pid), "persona": get_persona(key, persona=pid),
-            "relationships": list_relationships(key, persona=pid), "nicknames": aliases(key, persona=pid)}
+            "relationships": list_relationships(key, persona=pid), "nicknames": aliases(key, persona=pid),
+            "contexts": contexts, "interactions": member_context.interactions(key, pid)}
 
 
 @router.put("/api/memory/{uid}")

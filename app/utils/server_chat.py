@@ -158,6 +158,7 @@ class Channel:
     last_author: int | None = None
     followups: int = 0
     learning: OrderedDict = field(default_factory=OrderedDict)
+    learning_due: dict = field(default_factory=dict)
     observed: deque = field(default_factory=lambda: deque(maxlen=512))
     last_ambient_check: float = float("-inf")
     last_ambient_attempt: float = float("-inf")
@@ -172,7 +173,8 @@ class ServerChat:
                  scheduled=lambda message, delay: None, report=lambda exc: None,
                  clock=time.monotonic, wall_clock=time.time, rng=random.random,
                  is_active=lambda message: False, consider_ambient=None,
-                 finished=lambda message, outcome, reason: None, consider_followup=None):
+                 finished=lambda message, outcome, reason: None, consider_followup=None,
+                 observed=lambda message: None):
         self.self_id, self.get_config = self_id, get_config
         self.respond, self.learn, self.seed = respond, learn, seed
         self.can_reply, self.report, self.clock, self.rng = can_reply, report, clock, rng
@@ -180,6 +182,7 @@ class ServerChat:
         self.is_active = is_active
         self.consider_ambient = consider_ambient
         self.consider_followup = consider_followup
+        self.member_observed = observed
         self.finished = finished
         self.last_ambient_attempt = float("-inf")
         self.channels = OrderedDict()
@@ -188,6 +191,7 @@ class ServerChat:
         self.learning_queue = OrderedDict()
         self.learned_at = OrderedDict()
         self.learning_task = None
+        self.learning_flush_task = None
         self.closed = False
 
     def _history_limit(self):
@@ -315,6 +319,8 @@ class ServerChat:
                 self._finished(pending[0], "cancelled", "member retracted their message")
             return True
         config = self.get_config()
+        if config.get("learn_from_chat", True) and self.can_reply(message):
+            self.member_observed(message)
         reason = self._reason(message, state, directed, config)
         if config.get("learn_from_chat", True) and _text(message):
             self._queue_learning(message, state, force=reason in {"direct", "greeting", "followup"})
@@ -537,19 +543,32 @@ class ServerChat:
         user_id = message.author.id
         batch = state.learning.setdefault(user_id, deque(maxlen=12))
         batch.append(message)
+        state.learning_due.setdefault(user_id, self.clock()+15)
         state.learning.move_to_end(user_id)
         if len(state.learning) > 64:
-            state.learning.popitem(last=False)
+            discarded, _ = state.learning.popitem(last=False)
+            state.learning_due.pop(discarded, None)
         key = (message.guild.id, user_id)
         minimum = int(_number(config, "learning_min_messages", 4, 1, 12))
         cooldown = _number(config, "learning_interval_seconds", 120, 10, 86400)
-        if (not force and len(batch) < minimum) \
-                or self.clock()-self.learned_at.get(key, float("-inf")) < cooldown:
+        due = self.learned_at.get(key, float("-inf"))+cooldown
+        if (not force and len(batch) < minimum) or self.clock() < due:
+            state.learning_due[user_id] = max(state.learning_due[user_id], due)
+            if self.learning_flush_task is None or self.learning_flush_task.done():
+                self.learning_flush_task = asyncio.create_task(self._flush_learning_loop(), name="server-memory-flush")
+            return
+        self._enqueue_learning(state, user_id, key)
+
+    def _enqueue_learning(self, state, user_id, key):
+        batch = state.learning.get(user_id)
+        if not batch:
             return
         if len(self.learning_queue) >= 32:
             return
-        self.learning_queue[key] = list(batch)
+        combined = {m.id: m for m in [*self.learning_queue.get(key, []), *batch]}
+        self.learning_queue[key] = list(combined.values())[-12:]
         state.learning.pop(user_id, None)
+        state.learning_due.pop(user_id, None)
         self.learned_at[key] = self.clock()
         self.learned_at.move_to_end(key)
         if len(self.learned_at) > 4096:
@@ -557,11 +576,39 @@ class ServerChat:
         if self.learning_task is None or self.learning_task.done():
             self.learning_task = asyncio.create_task(self._learn_loop(), name="server-memory")
 
+    def _flush_due_learning(self):
+        if not self.get_config().get("learn_from_chat", True):
+            for state in self.channels.values():
+                state.learning.clear()
+                state.learning_due.clear()
+            self.learning_queue.clear()
+            return
+        for state in list(self.channels.values()):
+            for uid, at in list(state.learning_due.items()):
+                if at <= self.clock() and state.learning.get(uid):
+                    message = state.learning[uid][-1]
+                    if self.can_reply(message):
+                        self._enqueue_learning(state, uid, (message.guild.id, uid))
+                    else:
+                        state.learning.pop(uid, None)
+                        state.learning_due.pop(uid, None)
+
+    async def _flush_learning_loop(self):
+        try:
+            while not self.closed:
+                times = [at for state in self.channels.values() for at in state.learning_due.values()]
+                if not times:
+                    return
+                await asyncio.sleep(max(1, min(15, min(times)-self.clock())))
+                self._flush_due_learning()
+        finally:
+            self.learning_flush_task = None
+
     async def _learn_loop(self):
         try:
             while self.learning_queue:
                 _, messages = self.learning_queue.popitem(last=False)
-                if self.can_reply(messages[-1]):
+                if self.get_config().get("learn_from_chat", True) and self.can_reply(messages[-1]):
                     try:
                         # Every entry belongs to this exact author; other members never enter the extractor.
                         await self.learn(messages[-1].author, "\n".join(_text(m) for m in messages))
@@ -606,6 +653,8 @@ class ServerChat:
         tasks = list(self.reply_tasks)
         if self.learning_task is not None:
             tasks.append(self.learning_task)
+        if self.learning_flush_task is not None:
+            tasks.append(self.learning_flush_task)
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)

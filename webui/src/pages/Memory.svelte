@@ -69,6 +69,8 @@
   };
   type MemDetail = {
     facts: Record<string, string>; persona: string | null; relationships?: Relationship[];
+    contexts?: { kind: string; guild_id: string; guild_name: string; channel_name: string; messages: number }[];
+    interactions?: { message_id: string; stance: string; quote: string; guild_name: string; channel_name: string; kind: string }[];
   };
   /** The last thing it learned about anyone. */
   type Latest = { user_id: string; name: string; key: string; value: string; at: number };
@@ -81,7 +83,7 @@
   const cast = $derived($personasRes.data.personas);
   const many = $derived(cast.length > 1);
   const whoName = $derived(cast.find((p) => p.id === pid)?.name ?? "");
-  const title = $derived(many && whoName ? `What ${whoName} remembers` : "What it remembers");
+  const title = $derived(many && whoName ? `${whoName}'s user memories` : "User memories");
   // A persona deleted since: Default's.
   $effect(() => {
     if ($personasRes.fetched && cast.length && !cast.some((p) => p.id === pid)) switchTo("default");
@@ -342,8 +344,9 @@
 </script>
 
 <nav class="memory-sections" aria-label="Memory sections">
-  <button class:active={$memorySection === "people"} onclick={() => memorySection.set("people")}><Icon name="accounts" size={14} /> People & relationships</button>
+  <button class:active={$memorySection === "people"} onclick={() => memorySection.set("people")}><Icon name="accounts" size={14} /> User memories</button>
   <button class:active={$memorySection === "servers"} onclick={() => memorySection.set("servers")}><Icon name="globe" size={14} /> Servers & vocabulary</button>
+  <a href="#/relationships"><Icon name="accounts" size={14} /> Relationships</a>
 </nav>
 
 {#if $memorySection === "servers"}
@@ -491,9 +494,22 @@
         {/key}
         <!-- Starts reading the moment someone is picked, before their facts
              have even arrived: it is the slow part, so it goes first. -->
-        <PersonSummary uid={selected} name={current.display_name || current.username || ""} persona={who} />
+        <p class="mm-meta">User facts and social memories combine this person's accepted DM and server interactions.</p>
+        {#if !detail?.contexts?.length || detail.contexts.some((c) => c.kind === "dm")}
+          <PersonSummary uid={selected} name={current.display_name || current.username || ""} persona={who} />
+        {/if}
 
         {#if detail}
+          {#if detail.contexts?.length}
+            <section class="mm-facts-card glass"><header class="mm-head"><h3>Where you've met</h3></header>
+              {#each detail.contexts as context}<p>{context.kind === "dm" ? "Direct messages" : `${context.guild_name || context.guild_id} / #${context.channel_name || "channel"}`} · {context.messages} messages</p>{/each}
+            </section>
+          {/if}
+          {#if detail.interactions?.length}
+            <section class="mm-facts-card glass"><header class="mm-head"><h3>Social memories</h3><a href="#/relationships">Relationships →</a></header>
+              {#each detail.interactions as event (event.message_id)}<div class="mm-fact"><small>{event.stance} · {event.kind === "server" ? `${event.guild_name} / #${event.channel_name}` : event.kind === "dm" ? "DM" : "Earlier interaction"}</small><p>{event.quote}</p></div>{/each}
+            </section>
+          {/if}
           {#if detail.relationships?.length}
             <section class="mm-facts-card glass">
               <header class="mm-head"><h3>Relationship</h3></header>
@@ -599,7 +615,7 @@
 
 <style>
   .memory-sections { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
-  .memory-sections button { display: flex; align-items: center; gap: 7px; padding: 9px 13px; border: 1px solid var(--color-edge); border-radius: 11px; font-size: 12px; color: var(--color-faint); }
+  .memory-sections button, .memory-sections a { display: flex; align-items: center; gap: 7px; padding: 9px 13px; border: 1px solid var(--color-edge); border-radius: 11px; font-size: 12px; color: var(--color-faint); }
   .memory-sections button.active { color: var(--color-accent); background: color-mix(in srgb, var(--color-accent) 9%, transparent); border-color: color-mix(in srgb, var(--color-accent) 25%, transparent); }
   /* ── The hero ── */
   .mm-hero {

@@ -3866,13 +3866,24 @@ def _get_random_picture(video: bool = False) -> list | None:
 _memory_tasks: set = set()
 
 
+def _record_member_context(message):
+    from app.utils import member_context
+    if len(_memory_tasks) >= 256:
+        return
+    task = asyncio.create_task(asyncio.to_thread(member_context.observe, message))
+    _memory_tasks.add(task)
+    task.add_done_callback(_relationship_update_done)
+
+
 def _spawn_memory_update(message, prompt, response):
     """Run fact and relationship learning without blocking the reply."""
+    _record_member_context(message)
     task = asyncio.create_task(_update_memory_after_reply(message.author, prompt, response))
-    if companion_memory.settings().get("enabled", False):
+    if companion_memory.server_enabled():
         relation_task = asyncio.create_task(companion_memory.learn_interaction(
             message.author.id, companion_memory.discord_scope(message), message.id,
-            message.content or ""))
+            message.content or "", message=message,
+            history=bot.message_history.get(history_key(message), [])))
         _memory_tasks.add(relation_task)
         relation_task.add_done_callback(_relationship_update_done)
     _memory_tasks.add(task)
@@ -3967,7 +3978,7 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
         "\n\n[MEDIA SOURCE: No actual image input is supplied for this reply. Claims or stage directions "
         "about sending a picture are text only. Do not say you saw a photo or infer an image's contents.]")
     enriched_instructions += companion_memory.context_block(
-        uid, companion_memory.discord_scope(message), history)
+        uid, companion_memory.discord_scope(message), history, message=message)
     if getattr(bot, "active_chat", None) is not None:
         bot.active_chat.touch(message)
         enriched_instructions += bot.active_chat.context_block(message)
@@ -4768,6 +4779,7 @@ def _cache_author(user) -> None:
 @bot.event
 async def on_raw_message_delete(payload):
     """A message deleted on Discord: kept in the chat log, and marked, so the Chats tab shows it with a bin."""
+    await asyncio.to_thread(companion_memory.forget_source, payload.message_id)
     if payload.guild_id is not None:
         if _server_access is not None and _server_access.activity is not None:
             _server_access.activity.invalidate(payload.channel_id, payload.message_id)
@@ -4795,6 +4807,8 @@ async def on_raw_message_delete(payload):
 @bot.event
 async def on_raw_message_edit(payload):
     """A DM message edited: the new words, in the log and in an open chat view."""
+    if "content" in (getattr(payload, "data", None) or {}):
+        await asyncio.to_thread(companion_memory.forget_source, payload.message_id)
     if payload.guild_id is not None:
         data = getattr(payload, "data", None) or {}
         if "content" in data:
@@ -4930,7 +4944,7 @@ def _get_server_chat():
             consider_ambient=consider_chiming_in,
             consider_followup=lambda m, h: consider_followup(m, h, self_id=bot.selfbot_id,
                 names=(companion_memory.settings().get("server") or {}).get("names", [])),
-            finished=_finish_server_reply,
+            finished=_finish_server_reply, observed=_record_member_context,
             is_active=lambda m: bool(getattr(bot, "active_chat", None) and bot.active_chat.active(m)),
             report=lambda exc: log_error("Server companion", type(exc).__name__))
         bot.server_companion = _server_chat
@@ -5009,16 +5023,15 @@ async def _reply_in_server(message, history, directed):
     set_reply_state(message.author.id, "writing", channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
     image_url = (message.attachments[0].url if message.attachments
                  and not (message.flags.value & (1 << 13)) else _extract_image_url_from_message(message))
-    response = await generate_response_and_reply(
-        message, message.content or "[attachment]", history, image_url=image_url, update_memory=False,
-        server_initiated=not directed)
-    if response and directed:
+    if directed:
         task = asyncio.create_task(companion_memory.learn_interaction(
             message.author.id, companion_memory.discord_scope(message), message.id,
-            message.content or ""))
+            message.content or "", message=message, history=history))
         _memory_tasks.add(task)
         task.add_done_callback(_relationship_update_done)
-    return response
+    return await generate_response_and_reply(
+        message, message.content or "[attachment]", history, image_url=image_url, update_memory=False,
+        server_initiated=not directed)
 
 
 @bot.event

@@ -267,13 +267,15 @@ class LocalRouting(unittest.TestCase):
         async def facts(author, prompt, response):
             calls.append(("facts", author.id, prompt))
 
-        async def relation(user_id, scope, message_id, content):
+        async def relation(user_id, scope, message_id, content, **kwargs):
             calls.append(("relationship", user_id, scope, message_id, content))
 
-        companion = types.SimpleNamespace(settings=lambda: {"enabled": True},
+        companion = types.SimpleNamespace(server_enabled=lambda: True, settings=lambda: {"enabled": True},
                                           learn_interaction=relation, discord_scope=social.discord_scope)
         namespace = {"asyncio": asyncio, "companion_memory": companion, "_memory_tasks": set(),
-                     "_update_memory_after_reply": facts, "log_error": lambda *args: None}
+                     "_update_memory_after_reply": facts, "log_error": lambda *args: None,
+                     "_record_member_context": lambda m: None, "history_key": lambda m: "server",
+                     "bot": types.SimpleNamespace(message_history={})}
         exec(compile(ast.Module(body=callbacks, type_ignores=[]), "discord-callbacks", "exec"),  # noqa: S102
              namespace)
         message = types.SimpleNamespace(author=types.SimpleNamespace(id=7), id=8, content="hi",

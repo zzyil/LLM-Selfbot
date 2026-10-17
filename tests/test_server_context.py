@@ -78,9 +78,12 @@ class ReplyContext(unittest.IsolatedAsyncioTestCase):
         generate = AsyncMock(return_value=None)
         ns = {"conversation": conversation, "as_turn": lambda m, text: f"techcet [user 20]: {text}",
               "history_key": lambda m: "ch-100", "bot": N(message_history={}), "set_reply_state": Mock(),
-              "generate_response_and_reply": generate, "_extract_image_url_from_message": lambda m: None}
+              "generate_response_and_reply": generate, "_extract_image_url_from_message": lambda m: None,
+              "asyncio": asyncio, "companion_memory": N(learn_interaction=AsyncMock(), discord_scope=lambda m: "character"),
+              "_memory_tasks": set(), "_relationship_update_done": lambda t: None}
         compile_functions({"_reply_in_server"}, ns)
         await ns["_reply_in_server"](target, history, True)
+        await asyncio.gather(*ns["_memory_tasks"])
         selected = generate.await_args.args[2]
         self.assertEqual(selected[-1]["content"], "techcet [user 20]: what games do you know")
         self.assertIn("zzy [user 10]", selected[-2]["content"])

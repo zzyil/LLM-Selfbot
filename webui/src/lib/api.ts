@@ -297,6 +297,7 @@ export const api = {
       body: JSON.stringify({ user_id, target }),
     }),
   // What one persona remembers about people: each has its own (Default's when none is named).
+  relationships: (persona = "") => request(scoped("/api/relationships", persona)),
   serverMemories: (persona = "") => request(scoped("/api/server-memories", persona)),
   serverLingo: (guild: string, persona = "") => request(scoped(`/api/lingo?guild_id=${encodeURIComponent(guild)}`, persona)),
   serverLingoPut: (guild: string, body: { term: string; meaning: string; scope_channel: string }, persona = "") =>

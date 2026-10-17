@@ -11,6 +11,7 @@ from app.utils.helpers import get_env_path, load_config
 from app.utils import conversation
 from app.utils.error_notifications import webhook_log, print_error
 from app.utils.logger import log_model_fallback, log_system, log_thinking
+from app.utils.reply_grounding import check as check_grounding
 
 # Active Groq clients, one per API key
 _groq_clients = []   # list of {"client": AsyncGroq, "label": str}
@@ -925,7 +926,7 @@ async def _social_reaction(prompt, instructions, history=None):
                 break
     try:
         response = await _create_completion(
-            social.reply_messages(instructions, assessment, history), max_tokens=_reply_token_cap())
+            social.reply_messages(instructions, assessment, history, prompt), max_tokens=_reply_token_cap())
         from app.utils.humanize import strip_meta
         text = strip_meta(re.sub(r"</?blockquote\b[^>]*>", "", _answer_of(response)).strip())
         recent = [str(turn.get("content") or "") for turn in (history or [])[-12:]
@@ -945,7 +946,7 @@ async def generate_response(prompt, instructions, history=None):
         return reaction
     social_reply = await _social_reaction(prompt, instructions, history)
     if social_reply is not None:
-        return social_reply
+        return await check_grounding(prompt, instructions, history, social_reply)
     if not _initialised:
         init_ai()
     try:
@@ -991,7 +992,7 @@ async def generate_response(prompt, instructions, history=None):
                     raise
         _show_thinking(response)
         from app.utils.humanize import strip_meta
-        return strip_meta(_answer_of(response))
+        return await check_grounding(prompt, instructions, history, strip_meta(_answer_of(response)))
     except Exception as e:
         # Rate-limit errors are handled and logged by the retry loop in main.py,
         # and a request too big for the model is explained there, in words.
@@ -1171,7 +1172,7 @@ async def generate_response_image(prompt, instructions, image_url, history=None)
 
         social_reply = await _social_reaction(prompt_with_image, instructions, history)
         if social_reply is not None:
-            return social_reply
+            return await check_grounding(prompt, instructions, history, social_reply)
         messages = conversation.model_messages(messages[0]["content"], messages[1:])
         response = await _create_completion(messages)
         _show_thinking(response)

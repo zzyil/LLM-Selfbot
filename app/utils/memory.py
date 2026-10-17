@@ -60,6 +60,8 @@ def clear_memory(user_id: int, persona=None):
     clear_relationships(user_id, persona)
     from app.utils.member_names import clear_user
     clear_user(user_id, persona)
+    from app.utils import member_context
+    member_context.clear(user_id, persona)
 
 
 def copy_persona_memory(src: str, dst: str):
@@ -75,6 +77,8 @@ def copy_persona_memory(src: str, dst: str):
 
     from app.utils.member_names import copy_persona
     copy_persona(src, dst)
+    from app.utils import member_context
+    member_context.copy_persona(src, dst)
 
 
 # ── Per-user persona overrides ────────────────────────────────────────────────

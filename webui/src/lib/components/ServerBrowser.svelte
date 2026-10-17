@@ -213,7 +213,7 @@
         </div>
       {/each}</section>{/each}
     </div>
-    <p class="sb-foot">Text channels and accessible active threads. <a href="#/memory" onclick={() => { viewPersona.set(persona); memorySection.set("servers"); }}>Server memories →</a></p>
+    <p class="sb-foot">Text channels and accessible active threads. <a href="#/memory" onclick={() => { viewPersona.set(persona); memorySection.set("servers"); }}>Server memories →</a> · <a href="#/relationships" onclick={() => viewPersona.set(persona)}>Relationships →</a></p>
   {/if}
 </div>
 

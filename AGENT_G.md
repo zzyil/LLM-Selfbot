@@ -545,12 +545,54 @@ inspect the Memory page rather than treating its notes as ground truth.
 Pairwise relationships between other members, fine-tuning, and semantic vector
 search are future extensions.
 
+## User memories and relationships
+
+**User memories** combines facts about the same stable member ID across DMs and
+server interactions. Members observed only in servers appear even before they
+share a personal fact. Their detail shows where the character met them and
+source-backed social memories separately from biography. Existing facts remain
+in the same persona/user store; insults and jokes do not become personal facts.
+
+**Relationships** is a separate dashboard destination with server, attitude and
+member filters, affinity, assessed-interaction counts and recent friendly or
+hostile source messages. Server relationship learning works independently of
+the DM companion access switch. Addressed server exchanges are analyzed even
+when no reply is ultimately delivered. Source IDs deduplicate repeated events;
+source edits/deletions remove the corresponding social memory and adjustment.
+A blunt correction or report of someone else's abuse is not itself evidence of
+hostility. Scores and familiarity thresholds still limit how quickly labels change.
+
+Relationship memories carry the source's channel and visibility at observation.
+Public reply context includes only that server's public events or events from
+the current restricted channel. DM quotes, other servers and old private events
+are not promoted into public context when a channel later becomes public. The
+owner can inspect all sources in the dashboard. Whole-person forgetting,
+copying memory and deleting a persona include encounter metadata.
+
+Passive fact batches flush after 15 seconds even below the four-message threshold.
+Messages collected during the learning cooldown flush when it expires, without
+needing another incoming message. Pending batches merge rather than overwrite
+one another. Supported self-disclosures still pass the existing intent and
+literal-evidence checks before becoming facts.
+
+Social comebacks for insults and corrections receive attributed conversational
+evidence instead of only an isolated insult cue. Corrections take precedence
+over accompanying abuse; the character can accept a concrete mistake without
+inventing a justification. Protected role-control reactions retain their separate
+sanitized input. With social awareness enabled, server drafts also get a neutral
+check for concrete wrong-speaker or invented-behavior claims. A supported error
+can trigger one revision and a second check; another supported error withholds
+the draft. The optional check has a 20-second timeout and leaves a usable reply
+alone if verification is unavailable. These semantic checks depend on model
+ability and do not establish arbitrary member claims as truth.
+
 ## Development
 
 ```sh
 .venv/bin/python tests/test_agent_g.py
 .venv/bin/python tests/test_server_chat.py
 .venv/bin/python tests/test_server_context.py
+.venv/bin/python tests/test_user_relationships.py
 .venv/bin/python tests/test_engine.py
 .venv/bin/python tests/test_localai.py
 .venv/bin/python tests/test_memory_brain.py
