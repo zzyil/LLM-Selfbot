@@ -38,7 +38,8 @@ class ChannelReplyLifecycle(unittest.IsolatedAsyncioTestCase):
         self.finish = scope["_finish_server_reply"]
         self.config = {"names": ["G"], "batch_wait_seconds": 0, "reply_cooldown_seconds": 0, "learn_from_chat": False,
                        "ambient_reply_probability": 1, "ambient_min_messages": 1, "ambient_min_members": 1,
-                       "ambient_read_seconds": 0, "ambient_cooldown_seconds": 0, "ambient_global_cooldown_seconds": 0}
+                       "ambient_read_seconds": 0, "ambient_cooldown_seconds": 0, "ambient_global_cooldown_seconds": 0,
+                       "max_direct_reply_age_seconds": 120}
 
         def scheduled(message, delay):
             self.bot.server_waiting[message.channel.id] = message

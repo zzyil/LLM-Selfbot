@@ -390,14 +390,33 @@ have a five-minute cooldown after the character's last reply attempt or self-pos
 Greetings directed at someone else and quoted greetings don't qualify. A greeting
 is rechecked after the collection window so it doesn't interrupt a new exchange.
 This path doesn't require the group activity threshold or an extra model decision.
-After a delivered reply, the same member can continue without another mention
-for 45 seconds, up to two follow-ups. A reply or mention aimed at someone else
-doesn't count as a follow-up. One queue per channel combines bursts from multiple
-members into a single response, with a three-second collection window and a
-20-second cooldown between inference attempts. Stale requests expire after two
-minutes. A direct or greeting-started conversation uses the longer configured
-active-conversation window while that member keeps talking. Dashboard Reply and
-Cancel work with this queue.
+After a delivered reply, members can continue without another mention for 45
+seconds. A neutral, evidence-checked local decision distinguishes questions and
+reactions addressed to the character or group from calls to other people,
+acknowledgements and people discussing the character among themselves. The same
+member gets up to two follow-ups, extended by the configured active-conversation
+window. A reply or mention aimed at someone else doesn't count as a follow-up.
+One queue per channel combines waiting bursts into one response, with a
+three-second collection window and a 20-second cooldown between inference
+attempts. Once generation starts, ordinary newer messages do not cancel it,
+even if busy traffic evicts the source from the bounded transcript; later
+requests wait for the next turn. Accepted replies have a five-minute age limit
+by default, separate from the two-minute ambient opportunity limit. Retractions,
+source edits/deletions, a manual owner reply or lost access can invalidate a
+reply. Dashboard Reply and Cancel work with this queue. Managed server replies
+use one referenced post and at most eight seconds of simulated typing.
+
+Every server turn includes a stable speaker ID, and the selected message stays
+last in model input even if the snapshot ends with another member or an old
+character answer. Threads have the same public-channel boundaries. Shared
+relationships and remembered facts remain background knowledge; they don't
+establish an unfinished DM conversation to continue publicly. Social assessment
+uses current-message evidence rather than inheriting a mistaken age argument
+from an earlier answer. Generic insults cannot supply age facts, and topic
+questions misclassified as personal insults get an independent target check.
+Internal reasoning and self-correction notes are removed from delivered replies
+and future assistant context while raw chat logs remain intact. A note-only
+completion produces no public post.
 
 Customize these under `bot.companion.server` in `config/config.yaml`:
 
@@ -412,6 +431,7 @@ ambient_reply_probability: 0.0
 batch_wait_seconds: 3
 reply_cooldown_seconds: 20
 max_reply_age_seconds: 120
+max_direct_reply_age_seconds: 300
 learn_from_chat: true
 learn_nicknames: true
 learning_min_messages: 4
@@ -530,6 +550,7 @@ search are future extensions.
 ```sh
 .venv/bin/python tests/test_agent_g.py
 .venv/bin/python tests/test_server_chat.py
+.venv/bin/python tests/test_server_context.py
 .venv/bin/python tests/test_engine.py
 .venv/bin/python tests/test_localai.py
 .venv/bin/python tests/test_memory_brain.py

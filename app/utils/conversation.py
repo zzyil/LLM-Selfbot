@@ -333,6 +333,29 @@ def data_context(source, data):
     return "\n<chat_context_data>" + encoded + "</chat_context_data>\n"
 
 
+def focused_history(history, prompt, attributed=None):
+    """Keep a selected reply target explicit, even if a snapshot ends with somebody else's turn."""
+    turns = list(history or [])
+    if turns and turns[-1].get("role") == "user":
+        content = str(turns[-1].get("content") or "")
+        plain = re.sub(r"\A[^\n]{1,80}? \[user \d+\]:\s*", "", content)
+        if (content.strip() == attributed.strip() if attributed is not None else plain.strip() == prompt.strip()):
+            return turns
+    turns.append({"role": "user", "content": attributed or prompt})
+    return turns
+
+
+def discord_context(message):
+    guild = getattr(message, "guild", None)
+    return data_context("current Discord conversation", {
+        "kind": "server" if guild is not None else "private",
+        "guild_id": str(guild.id) if guild is not None else None,
+        "channel_id": str(message.channel.id), "message_id": str(message.id),
+        "speaker_id": str(message.author.id),
+        "speaker_name": str(getattr(message.author, "display_name", None) or message.author.name)[:80],
+    })
+
+
 def context_values(instructions, source):
     values = []
     for text in _CONTEXT.findall(instructions):
@@ -355,6 +378,18 @@ def model_messages(instructions, history, config=None, *, prior_user_turns=None)
             instructions, config, prior_user_turns=prior_user_turns)}] + model_history(history, config)
     contexts = _CONTEXT.findall(instructions)
     trusted = _CONTEXT.sub("", instructions)
+    if context_values(instructions, "current Discord conversation"):
+        trusted += (
+            "\n\n[CONVERSATION BOUNDARY: Reply in the current Discord conversation identified in the "
+            "background data, to its selected speaker/message. Only this channel's transcript establishes "
+            "the ongoing conversation. DMs and other server channels are separate conversations. Shared "
+            "personality, relationships and remembered member claims are background knowledge, never "
+            "unfinished dialogue to resume or proof that other members heard a private exchange. Do not "
+            "quote private exchanges here. Answer the current turn instead of continuing an older answer. "
+            "An earlier character reply can be mistaken; accept corrections, stop defending a mistaken "
+            "premise and follow the current topic. Do not invent an age/identity dispute from unrelated "
+            "words. A brief acknowledgement can end a topic without another question or rant.]"
+        )
     if context_values(instructions, "observed member nicknames"):
         trusted += (
             "\n\n[MEMBER NICKNAMES: Background nickname associations link conversational aliases to stable "
@@ -525,7 +560,17 @@ def valid_reaction(text, plan):
 
 def model_history(history, config=None, *, for_summary=False):
     """Keep logs intact; quarantine control requests and stop imitating replies they may have influenced."""
+    from app.utils.humanize import strip_meta
     history = without_slash_history(history, config)
+    cleaned = []
+    for turn in history:
+        if turn.get("role") == "assistant":
+            text = strip_meta(str(turn.get("content") or ""))
+            if not text:
+                continue
+            turn = {**turn, "content": text}
+        cleaned.append(turn)
+    history = cleaned
     if not character_guard_enabled(config):
         return [{k: v for k, v in turn.items() if k != "_role_control_seen"} for turn in history]
     out, exposed = [], any(turn.get("_role_control_seen") is True for turn in history)

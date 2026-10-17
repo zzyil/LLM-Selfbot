@@ -25,7 +25,7 @@ class SocialAssessment(unittest.IsolatedAsyncioTestCase):
     def test_assessor_reads_profile_and_chat_as_data_separate_from_its_own_instructions(self):
         profile = "You are an insecure character, age 23." + conversation.data_context("bio", "age 80")
         messages = social.assessment_messages("stone tablet", profile)
-        payload = json.loads(messages[1]["content"])
+        payload = json.loads(messages[-1]["content"])
         self.assertNotIn("age 23", messages[0]["content"])
         self.assertIn("age 23", payload["character_document"])
         self.assertNotIn("age 80", payload["character_document"])
@@ -130,7 +130,7 @@ class SocialAssessment(unittest.IsolatedAsyncioTestCase):
                              return_value=response("grandpa??? i'm 23, what the fuck")) as reply:
             result = await ai.generate_response_image("look at this", "Character age 23", "image")
         self.assertIn("i'm 23", result)
-        payload = json.loads(assess.await_args.args[0][1]["content"])
+        payload = json.loads(assess.await_args.args[0][-1]["content"])
         self.assertIn("grandpa", payload["current_message"])
         assess.assert_awaited_once()
         reply.assert_awaited_once()

@@ -366,10 +366,8 @@ def _recent_speakers(message, limit: int = 6) -> list:
 def as_turn(message, content: str) -> str:
     """One user turn, attributed when the channel has more than one person in it."""
     if in_server(message.channel):
-        if companion_memory.settings().get("enabled", False):
-            name = re.sub(r"[\r\n:]", " ", speaker_label(message))[:60]
-            return f"{name} [user {message.author.id}]: {content}"
-        return f"{speaker_label(message)}: {content}"
+        name = re.sub(r"[\r\n:]", " ", speaker_label(message))[:60]
+        return f"{name} [user {message.author.id}]: {content}"
     return content
 
 
@@ -817,7 +815,7 @@ async def seed_history(key: str, first_message) -> None:
                     continue
                 role = "assistant" if m.author.id == me else "user"
                 line = text if role == "assistant" else as_turn(m, text)
-                if turns and turns[-1]["role"] == role:
+                if not in_server(ch) and turns and turns[-1]["role"] == role:
                     turns[-1]["content"] += "\n" + line
                 else:
                     turns.append({"role": role, "content": line})
@@ -3962,6 +3960,7 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
     # The persona's text read for every reply (a stat when it has not changed): written in the panel, from Telegram
     # or by a command, every account on that persona speaks with the new one from its next reply.
     enriched_instructions = load_instructions() + mood_block + memory_block + profile_block
+    enriched_instructions += conversation.discord_context(message)
     enriched_instructions += (
         "\n\n[MEDIA SOURCE: An actual image input is being processed by the image pipeline.]"
         if image_url else
@@ -3997,7 +3996,7 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
         )
 
     # Tone: straight/casual in servers, emotional/personal in DMs and GCs
-    if isinstance(message.channel, discord.TextChannel):
+    if in_server(message.channel):
         enriched_instructions += (
             "\n\n[CONTEXT: You are in a public server channel. Keep your tone straight, "
             "casual and concise, no excessive emotions, no deep personal feelings, no vulnerability. "
@@ -4251,6 +4250,10 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
     if not response:
         return None
 
+    if (not update_memory and _server_chat is not None
+            and not _server_chat.reply_can_send(message)):
+        return None
+
     if server_initiated and (_server_chat is None
                              or not _server_chat.ambient_can_send(message)):
         return None
@@ -4374,7 +4377,7 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
         _overflow = _style_pieces[_style_max_chunks - 1:]
         _style_pieces = _style_pieces[:_style_max_chunks - 1]
         _style_pieces.append(" ".join(_overflow)[:1900])
-    chunks = [response] if server_initiated and response.strip() else _style_pieces
+    chunks = [response[:1900]] if not update_memory and response.strip() else _style_pieces
 
     # global cooldown: human gap between replies so different conversations never land seconds apart; skipped with bypass_cooldown or when disabled
     if not bypass_cooldown and GLOBAL_COOLDOWN_ENABLED:
@@ -4517,15 +4520,20 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
                     if bypass_typing:
                         if i > 0:
                             await asyncio.sleep(random.uniform(1.0, 2.5))
-                        budget = max(0, _server_chat.ambient_seconds_left(message)-3) if server_initiated else None
+                        budget = (min(8, max(0, (_server_chat.ambient_seconds_left(message) if server_initiated
+                                                 else _server_chat.reply_seconds_left(message))-3))
+                                  if not update_memory and _server_chat is not None else None)
                         await _simulate_typing(message.channel, chunk, fast=True, max_seconds=budget)
                     else:
                         # short think before typing; follow-up chunks come 2-8s later (humans split a thought and hit send, they don't wander off for 15 seconds mid-message)
                         pre_delay = think_delay()
-                        if server_initiated:
-                            pre_delay = min(pre_delay, max(0, _server_chat.ambient_seconds_left(message)-5))
+                        if not update_memory and _server_chat is not None:
+                            pre_delay = min(pre_delay, 2, max(0, (_server_chat.ambient_seconds_left(message) if server_initiated
+                                                               else _server_chat.reply_seconds_left(message))-5))
                         await asyncio.sleep(pre_delay)
-                        budget = max(0, _server_chat.ambient_seconds_left(message)-3) if server_initiated else None
+                        budget = (min(8, max(0, (_server_chat.ambient_seconds_left(message) if server_initiated
+                                                 else _server_chat.reply_seconds_left(message))-3))
+                                  if not update_memory and _server_chat is not None else None)
                         await _simulate_typing(message.channel, chunk, fast=False, max_seconds=budget)
                 else:
                     if i > 0:
@@ -4535,6 +4543,8 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
                     if (not _server_channel_active(message, sending=True)
                             or (not update_memory and not _server_can_reply(message))):
                         set_reply_state(message.author.id, "skipped", reason="server paused or access changed", channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
+                        raise asyncio.CancelledError
+                    if not update_memory and _server_chat is not None and not _server_chat.reply_can_send(message):
                         raise asyncio.CancelledError
                     if _server_chat is not None:
                         _server_chat.mark_sending(message.channel.id)
@@ -4561,6 +4571,8 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
                         return await message.channel.send(chunk)
 
                 sent_msg = await _send_retrying(_send_chunk, message.author.name)
+                if not update_memory and _server_chat is not None:
+                    _server_chat.record_sent(message.channel.id, sent_msg.id)
                 bot.last_global_send = time.time()
                 _delivered = True
                 emit_chat_meta()
@@ -4909,13 +4921,16 @@ def _sync_channel_activity():
 def _get_server_chat():
     global _server_chat
     if _server_chat is None:
-        from app.utils.server_chat import ServerChat, consider_chiming_in
+        from app.utils.server_chat import ServerChat, consider_chiming_in, consider_followup
         _server_chat = ServerChat(
             self_id=lambda: bot.selfbot_id,
             get_config=lambda: companion_memory.settings().get("server") or {},
             respond=_reply_in_server, learn=_learn_in_server, seed=_seed_server_chat,
             can_reply=_server_can_reply, scheduled=_server_reply_scheduled,
-            consider_ambient=consider_chiming_in, finished=_finish_server_reply,
+            consider_ambient=consider_chiming_in,
+            consider_followup=lambda m, h: consider_followup(m, h, self_id=bot.selfbot_id,
+                names=(companion_memory.settings().get("server") or {}).get("names", [])),
+            finished=_finish_server_reply,
             is_active=lambda m: bool(getattr(bot, "active_chat", None) and bot.active_chat.active(m)),
             report=lambda exc: log_error("Server companion", type(exc).__name__))
         bot.server_companion = _server_chat
@@ -4987,6 +5002,8 @@ def _finish_server_reply(message, outcome, reason):
 
 
 async def _reply_in_server(message, history, directed):
+    prompt = message.content or "[attachment]"
+    history = conversation.focused_history(history, prompt, as_turn(message, prompt))
     key = history_key(message)
     bot.message_history[key] = history
     set_reply_state(message.author.id, "writing", channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
@@ -5043,6 +5060,8 @@ async def on_message(message):
                 except Exception:
                     pass
         elif in_server(message.channel):
+            if _server_chat is not None and _server_chat.sent_automatically(message.channel.id, message.id):
+                return  # A delayed gateway echo must not cancel the next queued question.
             _w = bot.server_waiting.get(message.channel.id)
             _ref = getattr(getattr(message, "reference", None), "message_id", None)
             if (_server_chat is not None and _w is not None

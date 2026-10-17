@@ -285,7 +285,7 @@ class Vocabulary(unittest.IsolatedAsyncioTestCase):
     def test_vocabulary_is_available_to_social_assessment_without_becoming_identity(self):
         self.store()
         block = lingo.context_block(message(), "are you snouted?")
-        data = json.loads(social.assessment_messages("are you snouted?", "age 23" + block)[1]["content"])
+        data = json.loads(social.assessment_messages("are you snouted?", "age 23" + block)[-1]["content"])
         self.assertIn("uncircumcised people", str(data["server_vocabulary"]))
         self.assertNotIn("uncircumcised", data["character_document"])
         self.assertNotIn("author_id", str(data["server_vocabulary"]))

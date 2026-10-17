@@ -57,7 +57,7 @@ print("\n== humanize ==")
 check("strip em dash", strip_ai_tells("a \u2014 b \u2013 c") == "a  b  c")
 check("strip meta line", strip_meta("hey there\n(translation: salut)") == "hey there")
 check("strip inline translation", strip_meta("salut (translation: hi)").strip() == "salut")
-check("meta-only text falls back", strip_meta("(translation: hi)") != "")
+check("meta-only text is withheld", strip_meta("(translation: hi)") == "")
 check("strip_meta keeps normal text", strip_meta("just a normal reply") == "just a normal reply")
 random.seed(7)
 # A "swap" of two identical adjacent letters (the "ll" in hello) is a no-op,

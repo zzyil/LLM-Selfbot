@@ -174,6 +174,8 @@ CONFIG_SCHEMA = [
     {"key": "bot.tts.tones", "type": "json", "label": "Delivery", "section": "Behaviour"},
     {"key": "bot.companion.server.enabled", "type": "bool", "label": "Join server conversations",
      "section": "Conversation", "default": False},
+    {"key": "bot.companion.server.max_direct_reply_age_seconds", "type": "int", "label": "Accepted server reply age limit (s)",
+     "section": "Conversation", "min": 30, "max": 1800, "default": 300},
     {"key": "bot.companion.server.learn_nicknames", "type": "bool", "label": "Learn member nicknames from conversations",
      "section": "Memory", "default": True},
     {"key": "bot.companion.server.reply_to_greetings", "type": "bool", "label": "Reply to greetings in quiet channels",

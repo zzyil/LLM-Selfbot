@@ -349,7 +349,7 @@ class ParticipationDecision(unittest.IsolatedAsyncioTestCase):
         target.channel.send, target.reply = AsyncMock(), AsyncMock()
         ns = {"chunk": "pineapple pizza is elite actually", "server_initiated": True, "update_memory": False,
               "_server_can_reply": lambda m: True, "_server_channel_active": lambda m, **kw: True, "message": target,
-              "_server_chat": types.SimpleNamespace(mark_sending=Mock(), ambient_can_send=lambda m: True),
+              "_server_chat": types.SimpleNamespace(mark_sending=Mock(), ambient_can_send=lambda m: True, reply_can_send=lambda m: True),
               "discord": types.SimpleNamespace(AllowedMentions=types.SimpleNamespace(none=lambda: "no mentions"))}
         exec(compile(ast.Module(body=[node], type_ignores=[]), "ambient-send", "exec"), ns)  # noqa: S102
         await ns["_send_chunk"]()

@@ -865,7 +865,8 @@ def _reasoning_of(response) -> str:
 def _answer_of(response) -> str:
     """The reply text, with any <think> block taken out of it."""
     content = response.choices[0].message.content or ""
-    return re.sub(r"<think>.*?</think>\s*", "", content, flags=re.S)
+    from app.utils.humanize import strip_reasoning
+    return strip_reasoning(content)
 
 
 def _show_thinking(response):
@@ -881,7 +882,8 @@ async def _character_reaction(prompt, instructions, history=None):
     try:
         response = await _create_completion(
             conversation.reaction_messages(instructions, plan), max_tokens=_reply_token_cap())
-        text = re.sub(r"</?blockquote\b[^>]*>", "", _answer_of(response)).strip()
+        from app.utils.humanize import strip_meta
+        text = strip_meta(re.sub(r"</?blockquote\b[^>]*>", "", _answer_of(response)).strip())
         if conversation.valid_reaction(text, plan):
             return text
     except (Exception, SystemExit):  # noqa: BLE001 - keep the character reaction when inference is unavailable
@@ -908,6 +910,14 @@ async def _social_reaction(prompt, instructions, history=None):
             return None
     if assessment is None or assessment["kind"] not in social.ACTIVE:
         return None
+    if social.needs_target_check(prompt, assessment):
+        try:
+            checked = await asyncio.wait_for(_create_small_completion(
+                social.target_check_messages(prompt), max_tokens=500, temperature=0.0), timeout=30)
+            if not social.target_check_result(_answer_of(checked), prompt):
+                return None
+        except Exception:
+            return None
     if assessment["kind"] in {"role_pressure", "roleplay"} and history:
         for turn in reversed(history):
             if turn.get("role") == "user" and prompt.strip() in str(turn.get("content") or ""):
@@ -916,7 +926,8 @@ async def _social_reaction(prompt, instructions, history=None):
     try:
         response = await _create_completion(
             social.reply_messages(instructions, assessment, history), max_tokens=_reply_token_cap())
-        text = re.sub(r"</?blockquote\b[^>]*>", "", _answer_of(response)).strip()
+        from app.utils.humanize import strip_meta
+        text = strip_meta(re.sub(r"</?blockquote\b[^>]*>", "", _answer_of(response)).strip())
         recent = [str(turn.get("content") or "") for turn in (history or [])[-12:]
                   if turn.get("role") == "assistant"][-3:]
         if social.valid_reply(text, assessment, recent):
@@ -927,7 +938,8 @@ async def _social_reaction(prompt, instructions, history=None):
 
 
 async def generate_response(prompt, instructions, history=None):
-    """Completion request returning the response text; if history is passed the caller already appended the user turn as the last entry and prompt is NOT added again, otherwise prompt is the sole user message."""
+    """Generate a visible reply with the selected member turn last in model context."""
+    history = conversation.focused_history(history, prompt)
     reaction = await _character_reaction(prompt, instructions, history)
     if reaction is not None:
         return reaction
@@ -978,7 +990,8 @@ async def generate_response(prompt, instructions, history=None):
                 else:
                     raise
         _show_thinking(response)
-        return _answer_of(response)
+        from app.utils.humanize import strip_meta
+        return strip_meta(_answer_of(response))
     except Exception as e:
         # Rate-limit errors are handled and logged by the retry loop in main.py,
         # and a request too big for the model is explained there, in words.
@@ -1138,7 +1151,8 @@ async def generate_response_image(prompt, instructions, image_url, history=None)
         if history:
             # caller already appended the plain user message to history, swap the last entry for the image-enriched version
             if history[-1].get("role") == "user":
-                history[-1] = {"role": "user", "content": prompt_with_image}
+                prefix = re.match(r"\A[^\n]{1,80}? \[user \d+\]:\s*", str(history[-1].get("content") or ""))
+                history[-1] = {**history[-1], "content": (prefix.group(0) if prefix else "") + prompt_with_image}
             else:
                 history.append({"role": "user", "content": prompt_with_image})
             messages = [
@@ -1165,7 +1179,8 @@ async def generate_response_image(prompt, instructions, image_url, history=None)
         # Append the assistant turn only when history was created locally.
         if len(history) == 1 and history[0].get("content") == prompt_with_image:
             history.append({"role": "assistant", "content": answer})
-        return answer
+        from app.utils.humanize import strip_meta
+        return strip_meta(answer)
     except Exception as e:
         print_error("AI image Error", e)
         raise
