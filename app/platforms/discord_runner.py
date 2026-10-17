@@ -1047,14 +1047,29 @@ def get_late_opener(prompt: str, lang: str = "en") -> str:
     return random.choice(openers) if openers else ""
 
 
-async def _simulate_typing(channel, text: str, fast: bool = False):
-    """Type `text` at human speed (2.5-6 cps normal, 4-8 fast) in short bursts with occasional think-pauses. The typing indicator stays up the whole time; Discord only clears it ~10s after the last refresh."""
-    total = typing_time(text, fast)
-    for burst, pause in typing_bursts(total, fast):
-        async with channel.typing():
-            await asyncio.sleep(burst)
-        if pause:
-            await asyncio.sleep(pause)
+async def _simulate_typing(channel, text: str, fast: bool = False, max_seconds=None):
+    """Bound the entire typing cadence, including pauses and a slow typing-indicator request."""
+    budget = typing_time(text, fast)
+    if max_seconds is not None:
+        budget = min(budget, max(0, max_seconds))
+    if budget <= 0:
+        return
+    deadline = time.monotonic() + budget
+
+    async def cadence():
+        for burst, pause in typing_bursts(budget, fast):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            async with channel.typing():
+                await asyncio.sleep(min(burst, max(0, deadline-time.monotonic())))
+            if pause:
+                await asyncio.sleep(min(pause, max(0, deadline-time.monotonic())))
+
+    try:
+        await asyncio.wait_for(cadence(), timeout=budget+2)
+    except TimeoutError:
+        log_system("Typing indicator timed out; continuing to the send check")
 
 
 async def _maybe_edit_after_send(sent_msg, original: str):
@@ -1782,16 +1797,23 @@ async def _tg_ipc_loop():
             _write_result(cmd_id, {"ok": True, "mid": str(sent.id), "ts": sent.created_at.timestamp(), "dropped_reply": dropped, **_message_payload(sent)})
 
     async def _server_job_safe(cmd, cmd_id, cid, payload):
+        waiting = bot.server_waiting.get(cid)
         if cmd == "reply_user":
             _manual_replies[f"ch{cid}"] = asyncio.current_task()
         try:
             await _server_job(cmd, cmd_id, cid, payload)
         except asyncio.CancelledError:
             # Cancelled from the panel while it was being written: whatever went out already stays.
+            if cmd == "reply_user" and waiting is not None:
+                _finish_server_reply(waiting, "cancelled", "you cancelled the reply")
             _write_result(cmd_id, {"ok": False, "success": False, "cancelled": True, "reason": "you cancelled the reply"})
         except discord.Forbidden:
+            if cmd == "reply_user" and waiting is not None:
+                _finish_server_reply(waiting, "failed", "this account cannot post in that channel")
             _write_result(cmd_id, {"ok": False, "success": False, "reason": "this account cannot post in that channel"})
         except Exception as e:
+            if cmd == "reply_user" and waiting is not None:
+                _finish_server_reply(waiting, "failed", f"reply interrupted: {type(e).__name__}")
             _write_result(cmd_id, {"ok": False, "success": False, "reason": str(e)})
         finally:
             if cmd == "reply_user" and _manual_replies.get(f"ch{cid}") is asyncio.current_task():
@@ -4499,12 +4521,16 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
                     if bypass_typing:
                         if i > 0:
                             await asyncio.sleep(random.uniform(1.0, 2.5))
-                        await _simulate_typing(message.channel, chunk, fast=True)
+                        budget = max(0, _server_chat.ambient_seconds_left(message)-3) if server_initiated else None
+                        await _simulate_typing(message.channel, chunk, fast=True, max_seconds=budget)
                     else:
                         # short think before typing; follow-up chunks come 2-8s later (humans split a thought and hit send, they don't wander off for 15 seconds mid-message)
                         pre_delay = think_delay()
+                        if server_initiated:
+                            pre_delay = min(pre_delay, max(0, _server_chat.ambient_seconds_left(message)-5))
                         await asyncio.sleep(pre_delay)
-                        await _simulate_typing(message.channel, chunk, fast=False)
+                        budget = max(0, _server_chat.ambient_seconds_left(message)-3) if server_initiated else None
+                        await _simulate_typing(message.channel, chunk, fast=False, max_seconds=budget)
                 else:
                     if i > 0:
                         await asyncio.sleep(random.uniform(2, 8) if not bypass_typing else random.uniform(1.0, 2.5))
@@ -4885,7 +4911,7 @@ def _get_server_chat():
             get_config=lambda: companion_memory.settings().get("server") or {},
             respond=_reply_in_server, learn=_learn_in_server, seed=_seed_server_chat,
             can_reply=_server_can_reply, scheduled=_server_reply_scheduled,
-            consider_ambient=consider_chiming_in,
+            consider_ambient=consider_chiming_in, finished=_finish_server_reply,
             is_active=lambda m: bool(getattr(bot, "active_chat", None) and bot.active_chat.active(m)),
             report=lambda exc: log_error("Server companion", type(exc).__name__))
         bot.server_companion = _server_chat
@@ -4936,6 +4962,17 @@ async def _learn_in_server(author, content):
     await _update_memory_after_reply(author, content, "")
 
 
+def _finish_server_reply(message, outcome, reason):
+    # A newer message may already own this channel's next reply. Never finish that one here.
+    cid = message.channel.id
+    if bot.server_waiting.get(cid) is not message:
+        return
+    if outcome == "failed":
+        set_reply_state(message.author.id, "failed", reason=reason, channel_id=cid)
+    else:
+        clear_reply_state(message.author.id, channel_id=cid)
+
+
 async def _reply_in_server(message, history, directed):
     key = history_key(message)
     bot.message_history[key] = history
@@ -4945,19 +4982,12 @@ async def _reply_in_server(message, history, directed):
     response = await generate_response_and_reply(
         message, message.content or "[attachment]", history, image_url=image_url, update_memory=False,
         server_initiated=not directed)
-    if response:
-        clear_reply_state(message.author.id, channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
-        if directed:
-            task = asyncio.create_task(companion_memory.learn_interaction(
-                message.author.id, companion_memory.discord_scope(message), message.id,
-                message.content or ""))
-            _memory_tasks.add(task)
-            task.add_done_callback(_relationship_update_done)
-    else:
-        set_reply_state(message.author.id, "failed", reason="no server reply was delivered", channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
-    if bot.server_waiting.get(message.channel.id) is message:
-        bot.server_waiting.pop(message.channel.id, None)
-        emit_chat_event({"t": "done", "uid": f"ch{message.channel.id}"})
+    if response and directed:
+        task = asyncio.create_task(companion_memory.learn_interaction(
+            message.author.id, companion_memory.discord_scope(message), message.id,
+            message.content or ""))
+        _memory_tasks.add(task)
+        task.add_done_callback(_relationship_update_done)
     return response
 
 

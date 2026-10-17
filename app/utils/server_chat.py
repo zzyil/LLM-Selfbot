@@ -115,13 +115,15 @@ class ServerChat:
     def __init__(self, *, self_id, get_config, respond, learn, seed, can_reply,
                  scheduled=lambda message, delay: None, report=lambda exc: None,
                  clock=time.monotonic, wall_clock=time.time, rng=random.random,
-                 is_active=lambda message: False, consider_ambient=None):
+                 is_active=lambda message: False, consider_ambient=None,
+                 finished=lambda message, outcome, reason: None):
         self.self_id, self.get_config = self_id, get_config
         self.respond, self.learn, self.seed = respond, learn, seed
         self.can_reply, self.report, self.clock, self.rng = can_reply, report, clock, rng
         self.scheduled, self.wall_clock = scheduled, wall_clock
         self.is_active = is_active
         self.consider_ambient = consider_ambient
+        self.finished = finished
         self.last_ambient_attempt = float("-inf")
         self.channels = OrderedDict()
         self.reply_tasks = set()
@@ -263,41 +265,52 @@ class ServerChat:
                     if pending is None:
                         continue
                     message, reason = pending
-                    if not self.can_reply(message):
-                        continue
-                    if reason == "followup" and state.followups >= 2 and not self.is_active(message):
-                        continue
-                    created_at = getattr(message, "created_at", None)
-                    max_age = _number(config, "max_reply_age_seconds", 120, 10, 600)
-                    if created_at is not None and self.wall_clock()-created_at.timestamp() > max_age:
-                        continue
-                    state.last_attempt = self.clock()
-                    state.current = message
-                    state.current_reason = reason
-                    state.sending = False
-                    if not state.seeded:
-                        state.seeded = True
-                        try:
-                            state.earlier = (await self.seed(state.first_message))[-self._history_limit():]
-                        except Exception as exc:  # noqa: BLE001 - isolate and report transport callbacks
-                            self.report(exc)
-                    history = self.history(message.channel.id)
-                    if reason == "ambient":
-                        if not self._ambient_ready(state, config):
+                    outcome, detail = "skipped", "reply no longer eligible"
+                    try:
+                        if not self.can_reply(message):
                             continue
-                        state.last_ambient_attempt = self.last_ambient_attempt = self.clock()
-                        if self.consider_ambient is not None and not await self.consider_ambient(message, history):
+                        if reason == "followup" and state.followups >= 2 and not self.is_active(message):
                             continue
-                        if not self.ambient_can_send(message):
+                        if self.ambient_seconds_left(message) <= 0:
+                            detail = "reply opportunity expired"
                             continue
-                        self.scheduled(message, 0)
-                    reply = await self.respond(message, history, reason != "ambient")
-                    if reply:
-                        state.last_reply = self.clock()
-                        state.last_author = message.author.id
-                        state.followups = state.followups+1 if reason == "followup" else 0
-                        if reason != "followup":
-                            state.directed_session = reason == "direct"
+                        state.last_attempt = self.clock()
+                        state.current = message
+                        state.current_reason = reason
+                        state.sending = False
+                        if not state.seeded:
+                            state.seeded = True
+                            try:
+                                state.earlier = (await self.seed(state.first_message))[-self._history_limit():]
+                            except Exception as exc:  # noqa: BLE001 - isolate and report transport callbacks
+                                self.report(exc)
+                        history = self.history(message.channel.id)
+                        if reason == "ambient":
+                            if not self._ambient_ready(state, config):
+                                continue
+                            state.last_ambient_attempt = self.last_ambient_attempt = self.clock()
+                            if self.consider_ambient is not None and not await self.consider_ambient(message, history):
+                                continue
+                            if not self.ambient_can_send(message):
+                                continue
+                            self.scheduled(message, 0)
+                        reply = await self.respond(message, history, reason != "ambient")
+                        outcome = "sent" if reply else "failed"
+                        detail = "" if reply else "no server reply was delivered"
+                        if reply:
+                            state.last_reply = self.clock()
+                            state.last_author = message.author.id
+                            state.followups = state.followups+1 if reason == "followup" else 0
+                            if reason != "followup":
+                                state.directed_session = reason == "direct"
+                    except asyncio.CancelledError:
+                        outcome, detail = "cancelled", "reply cancelled or opportunity expired"
+                        raise
+                    except Exception as exc:  # noqa: BLE001 - report the failure and allow the next queued reply
+                        outcome, detail = "failed", f"reply interrupted: {type(exc).__name__}"
+                        self.report(exc)
+                    finally:
+                        self._finished(message, outcome, detail)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - one failed channel must not stop the worker
@@ -308,6 +321,17 @@ class ServerChat:
                 state.current = None
                 state.current_reason = None
                 state.sending = False
+
+    def _finished(self, message, outcome, reason):
+        try:
+            self.finished(message, outcome, reason)
+        except Exception as exc:  # noqa: BLE001 - status reporting must not strand a channel worker
+            self.report(exc)
+
+    def ambient_seconds_left(self, message):
+        maximum = _number(self.get_config(), "max_reply_age_seconds", 120, 10, 600)
+        created = getattr(message, "created_at", None)
+        return max(0, maximum-(self.wall_clock()-created.timestamp())) if created is not None else maximum
 
     def history(self, channel_id):
         state = self.channels.get(channel_id)
@@ -329,9 +353,7 @@ class ServerChat:
             return False
         if any(m.author.id == self.self_id() for m in list(state.messages)[ids.index(message.id)+1:]):
             return False
-        created = getattr(message, "created_at", None)
-        maximum = _number(self.get_config(), "max_reply_age_seconds", 120, 10, 600)
-        return created is None or self.wall_clock()-created.timestamp() <= maximum
+        return self.ambient_seconds_left(message) > 0
 
     def cancel(self, channel_id=None, user_id=None):
         stopped = False
@@ -343,6 +365,8 @@ class ServerChat:
                 continue
             if state.pending is not None or (state.task is not None and not state.task.done()):
                 stopped = True
+                if state.pending is not None:
+                    self._finished(state.pending[0], "cancelled", "you cancelled the reply")
                 state.pending = None
                 if state.task is not None:
                     state.task.cancel()

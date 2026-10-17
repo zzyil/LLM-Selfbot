@@ -227,6 +227,19 @@ restart; definitions persist. Reading does not guarantee participation. An unava
 runner is reported separately from an empty vocabulary. This page edits lexical memory,
 not model weights or the character's identity.
 
+## Reply progress and typing
+
+Typing cadence has a wall-clock limit that includes pauses and typing-indicator requests.
+An unprompted comment reserves three seconds of its remaining opportunity window for the
+send check, so a slow local generation cannot spend the rest of that window pretending
+to type. A stuck typing request times out and proceeds to the normal access/send checks.
+The existing expiry, channel selection and permission checks remain in force.
+
+Every scheduled server attempt reports its outcome, including early expiry, cancellation
+and exceptions. Cancelled or skipped attempts leave the reply queue; a failed send shows
+**Needs attention** instead of retaining **Typing**. Finishing an older attempt does not
+clear a newer message waiting in that channel, and a member's DM state stays separate.
+
 ## Conversation availability
 
 Discord chat commands are disabled by default (`bot.chat_commands.enabled: false`):
