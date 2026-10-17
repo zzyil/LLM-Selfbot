@@ -30,6 +30,11 @@ def response(text):
 
 
 class ReplyContext(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        privacy = patch("app.utils.output_guard._verify", AsyncMock(return_value=True))
+        privacy.start()
+        self.addCleanup(privacy.stop)
+
     async def test_server_seeding_never_reads_the_same_members_dm_and_keeps_speakers_separate(self):
         class DM:
             pass
@@ -179,6 +184,8 @@ class CurrentServerReplies(unittest.IsolatedAsyncioTestCase):
               "_server_chat": self.chat, "_server_can_reply": lambda m: True, "_server_channel_active": lambda m, **kw: True,
               "set_reply_state": Mock(), "asyncio": asyncio, "discord": N(DMChannel=type("DM", (), {})),
               "_no_reply_channels": set(), "config": {"bot": {"reply_ping": False}}}
+        from app.utils.output_guard import Delivery
+        ns.update(delivery=Delivery((ns["chunk"],)), i=0)
         compile_functions({"_send_chunk"}, ns)
         return ns
 

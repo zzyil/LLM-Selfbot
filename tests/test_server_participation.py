@@ -352,6 +352,8 @@ class ParticipationDecision(unittest.IsolatedAsyncioTestCase):
               "_server_chat": types.SimpleNamespace(mark_sending=Mock(), ambient_can_send=lambda m: True, reply_can_send=lambda m: True),
               "discord": types.SimpleNamespace(AllowedMentions=types.SimpleNamespace(none=lambda: "no mentions"))}
         exec(compile(ast.Module(body=[node], type_ignores=[]), "ambient-send", "exec"), ns)  # noqa: S102
+        from app.utils.output_guard import Delivery
+        ns.update(delivery=Delivery((ns["chunk"],)), i=0)
         await ns["_send_chunk"]()
         target.channel.send.assert_awaited_once_with(ns["chunk"], allowed_mentions="no mentions")
         target.reply.assert_not_awaited()

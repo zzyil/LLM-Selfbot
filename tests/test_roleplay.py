@@ -26,6 +26,9 @@ def assessment(kind="roleplay", quote="scene", target="none"):
 
 class Roleplay(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        privacy = patch("app.utils.output_guard._verify", AsyncMock(return_value=True))
+        privacy.start()
+        self.addCleanup(privacy.stop)
         self.config = patch.object(conversation, "_config", return_value=CONFIG)
         self.config.start()
         self.addCleanup(self.config.stop)

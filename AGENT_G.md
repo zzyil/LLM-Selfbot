@@ -586,9 +586,44 @@ the draft. The optional check has a 20-second timeout and leaves a usable reply
 alone if verification is unavailable. These semantic checks depend on model
 ability and do not establish arbitrary member claims as truth.
 
+## Output confidentiality
+
+Generated chat text always passes a separate output gate. It rejects internal role
+markers, control/data containers and long verbatim excerpts of the current private
+instructions, including common Unicode, URL, base64, hex and ROT13 encodings.
+A neutral background-model check reviews the candidate for paraphrased or translated
+rules, partial exports, reasoning and internal assessments. The current member request
+and a bounded recent transcript are evidence for detecting multi-turn extraction.
+Ordinary personal facts, emotions, software discussion and honest AI identity statements
+remain allowed. Member-supplied facts are not fingerprinted as behavioral instructions.
+
+This gate fails closed: a block, ambiguous verdict, malformed response, unavailable
+checker or timeout withholds the reply. It does not regenerate or send a replacement.
+The privacy check uses the configured background model and respects local-only routing.
+It adds one inference call per changed outgoing draft, with a 20-second timeout. A small,
+short-lived cache of approval hashes avoids repeating checks for identical output in
+the same instruction/request context; it stores no plaintext drafts or prompts.
+
+Discord validates the complete final message after typos/chunking before sending any
+part, binds transport retries to the exact approved payloads, and checks voice text
+before synthesis, generated picture captions before drawing, nudges and later typo
+edits. Blocked drafts do not enter reply memory/history or appear in public error
+messages; diagnostic events contain only a generic reason. Legacy Discord admin commands
+cannot export the prompt, persona overrides, config or memory database, or echo private
+values while updating them; use the local dashboard for inspection/downloads. Commands
+remain disabled by default. Obvious internal scaffolding
+in legacy assistant history is omitted from future model input, while raw chat logs
+remain intact. Manual owner-authored messages remain owner-controlled. Internal profile
+analysis has an explicit non-chat path, and final chat delivery still requires approval.
+
+These are layered mitigations, not a mathematical guarantee: a model-based checker can
+misclassify novel paraphrases. Keep credentials out of persona instructions entirely.
+Never use hidden instructions as the only protection for sensitive secrets.
+
 ## Development
 
 ```sh
+.venv/bin/python tests/test_output_guard.py
 .venv/bin/python tests/test_agent_g.py
 .venv/bin/python tests/test_server_chat.py
 .venv/bin/python tests/test_server_context.py

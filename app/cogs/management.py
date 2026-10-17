@@ -23,7 +23,7 @@ from app.utils.db import (
     clear_all_pictures_db,
     get_leaderboard,
 )
-from app.utils.memory import set_persona, clear_persona, get_persona
+from app.utils.memory import set_persona, clear_persona
 from app.utils import configstore, personas
 
 
@@ -103,21 +103,14 @@ class Management(commands.Cog):
             return
 
         if args.strip().lower() == "show":
-            current = get_persona(user.id)
-            if current:
-                await ctx.send(f"🎭 Persona for **{user.name}**:\n> {current}")
-            else:
-                await ctx.send(f"ℹ️ No custom persona set for **{user.name}**.")
+            await ctx.send("View private persona overrides in the local dashboard.", delete_after=10)
             return
 
         set_persona(user.id, args.strip())
         # Bust the in-memory cache so the next reply picks up the new persona immediately
         if hasattr(self.bot, "_memory_cache") and user.id in self.bot._memory_cache:
             self.bot._memory_cache[user.id]["__persona__"] = args.strip()
-        await ctx.send(
-            f"🎭 Persona set for **{user.name}**:\n> {args.strip()}\n"
-            f"The bot will use these instructions when replying to them from now on."
-        )
+        await ctx.send("Private persona override updated. Review it in the local dashboard.", delete_after=10)
 
     # Written where the value came from (app/utils/configstore.py): this persona's own stays its own, everyone's
     # stays everyone's.
@@ -433,23 +426,18 @@ class Management(commands.Cog):
         self.bot.instructions = text
         await ctx.send("Instructions updated from file!", delete_after=10)
 
-    @commands.command(name="getinstructions", description="Sends the current instructions.txt file.", aliases=["gi"])
+    @commands.command(name="getinstructions", description="Private instructions are available in the local dashboard.", aliases=["gi"])
     async def getinstructions(self, ctx):
         if ctx.author.id != self.bot.owner_id:
             return
-        instructions_path = str(personas.instructions_path(_my_persona()))
-        if not os.path.exists(instructions_path):
-            await ctx.send("No instructions file found.", delete_after=10)
-            return
-        await ctx.send(file=discord.File(instructions_path, filename="instructions.txt"))
+        await ctx.send("Private instructions can only be viewed in the local dashboard.", delete_after=10)
 
     @commands.command(name="prompt", description="View, set or clear the prompt for the AI.", aliases=["setprompt", "sp"])
     async def prompt(self, ctx, *, text=None):
         if ctx.author.id != self.bot.owner_id:
             return
         if text is None:
-            current = load_instructions()
-            await ctx.send(f"Current prompt:\n{f'```{current}```' if current != '' else 'No prompt is currently set.'}")
+            await ctx.send("View the private prompt in the local dashboard.", delete_after=10)
         elif text.lower() == "clear":
             personas.save_text(_my_persona(), "")
             self.bot.instructions = ""
@@ -457,27 +445,19 @@ class Management(commands.Cog):
         else:
             personas.save_text(_my_persona(), text)
             self.bot.instructions = text
-            await ctx.send(f"Updated prompt to:\n```{text}```")
+            await ctx.send("Private prompt updated. Review it in the local dashboard.", delete_after=10)
 
     @commands.command(name="getdb", description="Sends the bot_data.db file to Discord.")
     async def getdb(self, ctx):
         if ctx.author.id != self.bot.owner_id:
             return
-        db_path = resource_path("config/bot_data.db")
-        if not os.path.exists(db_path):
-            await ctx.send("No database file found.", delete_after=10)
-            return
-        await ctx.send(file=discord.File(db_path, filename="bot_data.db"))
+        await ctx.send("Download private memory data from the local dashboard.", delete_after=10)
 
     @commands.command(name="getconfig", description="Sends the current config.yaml file.", aliases=["gc"])
     async def getconfig(self, ctx):
         if ctx.author.id != self.bot.owner_id:
             return
-        config_path = resource_path("config/config.yaml")
-        if not os.path.exists(config_path):
-            await ctx.send("No config file found.", delete_after=10)
-            return
-        await ctx.send(file=discord.File(config_path, filename="config.yaml"))
+        await ctx.send("Download private configuration from the local dashboard.", delete_after=10)
 
     @commands.command(name="setconfig", description="Attach a .yaml file to update the bot config. Bot will restart automatically.")
     async def setconfig(self, ctx):
@@ -1003,100 +983,7 @@ class Management(commands.Cog):
         config["bot"]["allow_server"] = getattr(self.bot, "allow_server", True)
 
         if key is None:
-            bot_cfg = config["bot"]
-            tts = bot_cfg.get("tts") or {}
-            mood = bot_cfg.get("mood") or {}
-            late = bot_cfg.get("late_reply") or {}
-            nudge = bot_cfg.get("nudge") or {}
-            fr = bot_cfg.get("friend_requests") or {}
-            stale = bot_cfg.get("stale_reply") or {}
-
-            status = bot_cfg.get("status") or {}
-            notif = config.get("notifications") or {}
-
-            wait_times = bot_cfg.get("batch_wait_times") or []
-            # A range reads 20s-60s(30): any time between the two, picked 30 times in the weights.
-            wt_str = "  ".join(f"{w['time']}s" + (f"-{w['to']}s" if w.get('to') and w['to'] > w['time'] else "") + f"({w['weight']})" for w in wait_times)
-
-            mood_list = ", ".join(mood.get("moods", {}).keys())
-
-            nudge_hours = nudge.get("send_during_hours", [10, 22])
-
-            lines = [
-                "⚙️  **Bot Config**",
-                "─────────────────────────────",
-                "  🔧  **General**",
-                f"  `prefix`                {bot_cfg.get('prefix')}",
-                f"  `trigger`               {bot_cfg.get('trigger')}",
-                f"  `owner_id`              {bot_cfg.get('owner_id')}",
-                f"  `priority_prefix`       {bot_cfg.get('priority_prefix')}",
-                "─────────────────────────────",
-                "  💬  **Responses**",
-                f"  `allow_dm`              {bot_cfg.get('allow_dm')}",
-                f"  `allow_gc`              {bot_cfg.get('allow_gc')}",
-                f"  `allow_server`          {bot_cfg.get('allow_server', True)}",
-                f"  `hold_conversation`     {bot_cfg.get('hold_conversation')}",
-                f"  `realistic_typing`      {bot_cfg.get('realistic_typing')}",
-                f"  `reply_ping`            {bot_cfg.get('reply_ping')}",
-                f"  `disable_mentions`      {bot_cfg.get('disable_mentions')}",
-                f"  `batch_messages`        {bot_cfg.get('batch_messages')}",
-                f"  `batch_wait_times`      {wt_str}",
-                "─────────────────────────────",
-                "  🎭  **Behaviour**",
-                f"  `ignore_chance`         {bot_cfg.get('ignore_chance')}",
-                f"  `typo_chance`           {bot_cfg.get('typo_chance')}",
-                f"  `anti_age_ban`          {bot_cfg.get('anti_age_ban')}",
-                "─────────────────────────────",
-                "  🤖  **Models**",
-                (lambda v: f"  `groq_models`           {', '.join(v) if isinstance(v, list) else str(v)}")(bot_cfg.get('groq_models', [])),
-                f"  `groq_image_model`      {bot_cfg.get('groq_image_model')}",
-                f"  `groq_whisper_model`    {bot_cfg.get('groq_whisper_model')}",
-                "─────────────────────────────",
-                "  🔊  **TTS**",
-                f"  `tts.enabled`           {tts.get('enabled')}",
-                f"  `tts.voice`             {tts.get('voice')}",
-                (lambda v: f"  `tts.tones`             {', '.join(v) if isinstance(v, list) else str(v)}")(tts.get('tones', [])),
-                "─────────────────────────────",
-                "  😶  **Mood**",
-                f"  `mood.enabled`          {mood.get('enabled')}",
-                f"  `mood.shift_interval_min`  {mood.get('shift_interval_min')}",
-                f"  `mood.shift_interval_max`  {mood.get('shift_interval_max')}",
-                f"  `mood.moods`            {mood_list}",
-                "─────────────────────────────",
-                "  🕐  **Status**",
-                f"  `status.enabled`        {status.get('enabled')}",
-                f"  `status.change_interval_min`  {status.get('change_interval_min')}",
-                f"  `status.change_interval_max`  {status.get('change_interval_max')}",
-                (lambda v: f"  `status.statuses`       {', '.join(v) if isinstance(v, list) else str(v)}")(status.get('statuses', [])),
-                "─────────────────────────────",
-                "  💬  **Late Reply**",
-                f"  `late_reply.enabled`    {late.get('enabled')}",
-                f"  `late_reply.threshold`  {late.get('threshold')}",
-                "─────────────────────────────",
-                "  🗑️  **Stale Reply** *(servers & GCs only)*",
-                f"  `stale_reply.enabled`       {stale.get('enabled', False)}",
-                f"  `stale_reply.max_messages`  {stale.get('max_messages', 10)}",
-                f"  `stale_reply.min_age`       {stale.get('min_age', 120)}s",
-                "─────────────────────────────",
-                "  💤  **Nudge**",
-                f"  `nudge.enabled`              {nudge.get('enabled', False)}",
-                f"  `nudge.threshold_days`       {nudge.get('threshold_days', 2)}",
-                f"  `nudge.check_interval_hours` {nudge.get('check_interval_hours', 6)}",
-                f"  `nudge.send_during_hours`    {nudge_hours[0]}:00 – {nudge_hours[1]}:00",
-                "─────────────────────────────",
-                "  👥  **Friend Requests**",
-                f"  `friend_requests.enabled`         {fr.get('enabled', True)}",
-                f"  `friend_requests.accept_delay_min` {fr.get('accept_delay_min', 120)}s",
-                f"  `friend_requests.accept_delay_max` {fr.get('accept_delay_max', 600)}s",
-                "─────────────────────────────",
-                "  🔔  **Notifications**",
-                f"  `error_webhook`         {'set' if notif.get('error_webhook') else 'not set'}",
-                f"  `ratelimit_notifications`  {notif.get('ratelimit_notifications')}",
-                f"  `telegram_error_notifications`  {notif.get('telegram_error_notifications', False)}",
-                "─────────────────────────────",
-                "Use `,config <key> <value>` to edit. Example: `,config tts.voice diana`",
-            ]
-            await ctx.send("\n".join(lines), delete_after=60)
+            await ctx.send("View private configuration in the local dashboard.", delete_after=10)
             return
 
         if value is None:
@@ -1158,7 +1045,7 @@ class Management(commands.Cog):
             new_val = coerce(value, old_val)
             # Where the old value came from: this account's persona's own, or everyone's.
             configstore.set_effective(dotted, new_val)
-            await ctx.send(f"`{key}` updated: `{old_val}` → `{new_val}`", delete_after=15)
+            await ctx.send("Configuration updated. Review private values in the local dashboard.", delete_after=15)
         except Exception as e:
             await ctx.send(f"Error: {e}", delete_after=10)
 

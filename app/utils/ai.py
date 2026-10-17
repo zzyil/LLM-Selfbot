@@ -8,7 +8,7 @@ from groq import AsyncGroq, RateLimitError
 from os import getenv
 from dotenv import load_dotenv
 from app.utils.helpers import get_env_path, load_config
-from app.utils import conversation
+from app.utils import conversation, output_guard
 from app.utils.error_notifications import webhook_log, print_error
 from app.utils.logger import log_model_fallback, log_system, log_thinking
 from app.utils.reply_grounding import check as check_grounding
@@ -938,7 +938,16 @@ async def _social_reaction(prompt, instructions, history=None):
     return social.fallback(assessment, history)
 
 
-async def generate_response(prompt, instructions, history=None):
+async def generate_response(prompt, instructions, history=None, *, internal=False):
+    """Visible generations pass the confidentiality gate; internal analyses never go to chat."""
+    if internal:
+        return await _generate_response(prompt, instructions, history)
+    protected = instructions + output_guard.POLICY
+    text = await _generate_response(prompt, protected, history)
+    return await output_guard.check(text, protected, prompt, history=history)
+
+
+async def _generate_response(prompt, instructions, history=None):
     """Generate a visible reply with the selected member turn last in model context."""
     history = conversation.focused_history(history, prompt)
     reaction = await _character_reaction(prompt, instructions, history)
@@ -1111,6 +1120,12 @@ async def _prepare_image_url(image_url: str) -> str:
 
 
 async def generate_response_image(prompt, instructions, image_url, history=None):
+    protected = instructions + output_guard.POLICY
+    text = await _generate_response_image(prompt, protected, image_url, history)
+    return await output_guard.check(text, protected, prompt, history=history)
+
+
+async def _generate_response_image(prompt, instructions, image_url, history=None):
     # Inspect actual media before deciding whether an action-text caption is merely RP.
     reaction = (None if conversation.control_kind(prompt) == "roleplay" else
                 await _character_reaction(prompt, instructions, history))
@@ -1125,7 +1140,7 @@ async def generate_response_image(prompt, instructions, image_url, history=None)
             prepared_url = await _prepare_image_url(image_url)
         except Exception as img_err:
             print(f"[AI] Image preparation failed ({img_err}), falling back to text-only response")
-            return await generate_response(prompt, instructions, history)
+            return await _generate_response(prompt, instructions, history)
 
         image_response = await _create_image_completion(
             _image_model,
@@ -1177,9 +1192,6 @@ async def generate_response_image(prompt, instructions, image_url, history=None)
         response = await _create_completion(messages)
         _show_thinking(response)
         answer = _answer_of(response)
-        # Append the assistant turn only when history was created locally.
-        if len(history) == 1 and history[0].get("content") == prompt_with_image:
-            history.append({"role": "assistant", "content": answer})
         from app.utils.humanize import strip_meta
         return strip_meta(answer)
     except Exception as e:
@@ -1560,6 +1572,12 @@ async def summarize_conversation(lines: list, their_name: str,
 
 
 async def generate_nudge(original_message: str, days_elapsed: float, instructions: str) -> str:
+    protected = instructions + output_guard.POLICY
+    text = await _generate_nudge(original_message, days_elapsed, protected)
+    return await output_guard.check(text, protected, original_message)
+
+
+async def _generate_nudge(original_message: str, days_elapsed: float, instructions: str) -> str:
     """Nudge for a conversation the bot never replied to; tone shifts with the gap: <1.5 days brief ack, 1.5-3 days casual brush-over, 3+ days just resume naturally."""
     if not _initialised:
         init_ai()

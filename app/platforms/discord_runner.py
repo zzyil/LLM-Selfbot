@@ -138,6 +138,7 @@ def get_batch_wait_time(server: bool = False, message=None):
 config = load_config()
 
 from app.utils import member_names
+from app.utils import output_guard
 from app.utils.ai import init_ai, generate_response, generate_response_image, classify_memory_input, extract_memory, detect_memory_deletion, transcribe_voice, summarize_history, summarize_conversation, detect_language, generate_nudge, reset_client_index, fallback_model
 from dotenv import load_dotenv
 from discord.ext import commands
@@ -1071,12 +1072,14 @@ async def _simulate_typing(channel, text: str, fast: bool = False, max_seconds=N
         log_system("Typing indicator timed out; continuing to the send check")
 
 
-async def _maybe_edit_after_send(sent_msg, original: str):
+async def _maybe_edit_after_send(sent_msg, original: str, instructions: str, prompt=""):
     """Rare human behaviour: fix a small slip right after sending."""
     try:
         await asyncio.sleep(random.uniform(3, 15))
         fixed = tiny_typo_fix(original)
         if fixed and fixed != original:
+            delivery = await output_guard.prepare([fixed], instructions + output_guard.POLICY, prompt)
+            delivery.verify(0, fixed)
             await sent_msg.edit(content=fixed)
             log_system("Edited sent message (typo fix)")
     except Exception:
@@ -1499,6 +1502,8 @@ async def _nudge_loop():
                             async with dm.typing():
                                 cps = random.uniform(7, 18)
                                 await asyncio.sleep(len(nudge_text) / cps)
+                        nudge_delivery = await output_guard.prepare([nudge_text], nudge_instructions + output_guard.POLICY, original_content)
+                        nudge_delivery.verify(0, nudge_text)
                         await dm.send(nudge_text)
                         mark_nudge_sent(user_id, channel_id)
                         # the bot has spoken now, so they are no longer waiting on it
@@ -2959,7 +2964,7 @@ async def _tg_ipc_loop():
                         "Don't be overly mean but don't sugarcoat either. Max 3-4 short paragraphs."
                     )
                     _analyse_prompt = "Here are their messages: " + " | ".join(_msg_list[-200:])
-                    _profile = await generate_response(_analyse_prompt, _analyse_instructions, history=None)
+                    _profile = await generate_response(_analyse_prompt, _analyse_instructions, history=None, internal=True)
                     if _profile and is_refusal(_profile):
                         _profile = random.choice(refusal_fallbacks())
                     if _profile:
@@ -4196,16 +4201,16 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
                 break
 
             if response:
-                # memory upkeep is two more sequential Groq round trips, and neither of them changes the reply that has just been generated; awaiting them here put 1-6 seconds between the reply existing and the user seeing it, so they run alongside the send instead. the trade is that a fact learned this turn may not be in the cache yet if the same person fires another message within a second or two
-                if update_memory:
-                    _spawn_memory_update(message, prompt, response)
-
                 if late_opener:
                     # Opener is injected via system instruction above, no prepend.
                     log_system(f"Late reply opener injected for {message.author.name}")
 
                 break
 
+        except output_guard.OutputBlocked:
+            set_reply_state(uid, "skipped", reason="output privacy check withheld the reply", channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
+            log_system("[Output privacy] Reply withheld; no retry or fallback was sent.")
+            return None
         except Exception as e:
             error_msg = str(e)
             # One that will not load fails the same way however often it is asked: it has been said (app/utils/ai.py),
@@ -4251,6 +4256,9 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
                 response = await generate_response_image(prompt, enriched_instructions, image_url, history)
             else:
                 response = await generate_response(prompt, enriched_instructions, history)
+        except output_guard.OutputBlocked:
+            log_system("[Output privacy] Retry withheld before delivery.")
+            return None
         except Exception:
             pass
         # if the last-ditch retry is still a refusal, answer with a short reaction rather than silence or the refusal itself
@@ -4276,6 +4284,12 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
         set_reply_state(message.author.id, "skipped", reason="slash commands are disabled", channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
         return None
 
+    try:
+        response = await output_guard.check(response, enriched_instructions + output_guard.POLICY, prompt, history=history)
+    except output_guard.OutputBlocked:
+        set_reply_state(uid, "skipped", reason="output privacy check withheld the reply", channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
+        log_system("[Output privacy] Reply withheld before delivery.")
+        return None
     response = strip_meta(response).replace("\u2014", "").replace("\u2013", "")
 
     if server_initiated:
@@ -4308,6 +4322,8 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
                 if not _server_channel_active(message, sending=True):
                     return None
                 await message.add_reaction(_react_emoji)
+                if update_memory:
+                    _spawn_memory_update(message, prompt, "")
                 channel_name, guild_name = get_channel_context(message)
                 log_incoming(message.author.name, channel_name, guild_name, prompt)
                 log_response(message.author.name, f"[reaction only] {_react_emoji}")
@@ -4344,6 +4360,7 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
             if not spoken_response or is_refusal(spoken_response):
                 spoken_response = response
             spoken_response = spoken_response.replace("\u2014", "").replace("\u2013", "")
+            voice_delivery = await output_guard.prepare([spoken_response], spoken_instructions + output_guard.POLICY, prompt, history=history)
 
             channel_name, guild_name = get_channel_context(message)
             log_incoming(message.author.name, channel_name, guild_name, prompt)
@@ -4360,6 +4377,7 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
                     if not _server_channel_active(message, sending=True):
                         return None
                     reply_msg = message if i == 0 else None
+                    voice_delivery.verify(0, spoken_response)
                     await send_voice_message(
                         message.channel,
                         audio_bytes,
@@ -4367,9 +4385,14 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
                         mention_author=config["bot"]["reply_ping"],
                     )
                 bot.last_global_send = time.time()
+                if update_memory:
+                    _spawn_memory_update(message, prompt, spoken_response)
             else:
                 log_error("TTS", "generate_voice_message returned None - check Groq TTS API key and model")
             return spoken_response
+        except output_guard.OutputBlocked:
+            log_system("[Output privacy] Voice reply withheld before synthesis or delivery.")
+            return None
         except Exception as e:
             log_error("TTS Failed", str(e))
 
@@ -4389,6 +4412,32 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
         _style_pieces = _style_pieces[:_style_max_chunks - 1]
         _style_pieces.append(" ".join(_overflow)[:1900])
     chunks = [response[:1900]] if not update_memory and response.strip() else _style_pieces
+
+    # Transform ALL chunks, then check the combined final output before the first send.
+    final_chunks = []
+    for chunk in chunks:
+        if getattr(bot, "disable_mentions", DISABLE_MENTIONS):
+            chunk = chunk.replace("@", "@\u200b")
+        if bot.anti_age_ban:
+            chunk = re.sub(
+                r"(?i)\b(i(?:'m| am| was)|she(?:'s| is| was)|he(?:'s| is| was)|they(?:'re| are| were)|age[:\s]+|aged?)\s+([0-9]|1[0-2])\b",
+                lambda m: m.group(1) + " \u200b", chunk)
+            chunk = re.sub(r"(?i)\b([0-9]|1[0-2])\s+(year(?:s)?(?:\s+old)?|yo\b)", "\u200b \u200b", chunk)
+        chunk = _strip_pic_tags(chunk)
+        if is_refusal(chunk):
+            chunk = random.choice(refusal_fallbacks())
+        chunk = add_typo(chunk, config["bot"]["typo_chance"])
+        if chunk.strip():
+            final_chunks.append(chunk)
+    try:
+        delivery = await output_guard.prepare(final_chunks, enriched_instructions + output_guard.POLICY, prompt, history=history)
+    except output_guard.OutputBlocked:
+        set_reply_state(uid, "skipped", reason="output privacy check withheld the reply", channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
+        log_system("[Output privacy] Final output withheld before any chunk was sent.")
+        return None
+    chunks = delivery.parts
+    if update_memory:
+        _spawn_memory_update(message, prompt, response)
 
     # global cooldown: human gap between replies so different conversations never land seconds apart; skipped with bypass_cooldown or when disabled
     if not bypass_cooldown and GLOBAL_COOLDOWN_ENABLED:
@@ -4484,32 +4533,7 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
         # Whether anything actually reached Discord, as opposed to being generated.
         _delivered = False
         for i, chunk in enumerate(chunks):
-            if getattr(bot, "disable_mentions", DISABLE_MENTIONS):
-                chunk = chunk.replace("@", "@\u200b")
-
-            if bot.anti_age_ban:
-                # only obfuscate numbers that appear in an age context, e.g. "I'm 12", not innocent content like "Chapter 5" or "3 cats"
-                chunk = re.sub(
-                    r"(?i)\b(i(?:'m| am| was)|she(?:'s| is| was)|he(?:'s| is| was)|they(?:'re| are| were)|age[:\s]+|aged?)\s+([0-9]|1[0-2])\b",
-                    lambda m: m.group(1) + " \u200b",
-                    chunk,
-                )
-                chunk = re.sub(
-                    r"(?i)\b([0-9]|1[0-2])\s+(year(?:s)?(?:\s+old)?|yo\b)",
-                    "\u200b \u200b",
-                    chunk,
-                )
-
-            # Last line of defence, per chunk: neither a refusal nor a picture tag
-            # ever leaves this process, whatever happened upstream. Looked at
-            # before a typo goes in: "I'm srry, but I can't help with that." went
-            # out once the typo had hidden the wording from it.
-            chunk = _strip_pic_tags(chunk)
-            if is_refusal(chunk):
-                chunk = random.choice(refusal_fallbacks())
-            chunk = add_typo(chunk, config["bot"]["typo_chance"])
-            if not chunk.strip():
-                continue
+            delivery.verify(i, chunk)
             if i == 0:
                 log_incoming(message.author.name, channel_name, guild_name, prompt)
             log_response(message.author.name, chunk)
@@ -4551,6 +4575,7 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
                         await asyncio.sleep(random.uniform(2, 8) if not bypass_typing else random.uniform(1.0, 2.5))
 
                 async def _send_chunk(chunk=chunk):
+                    delivery.verify(i, chunk)
                     if (not _server_channel_active(message, sending=True)
                             or (not update_memory and not _server_can_reply(message))):
                         set_reply_state(message.author.id, "skipped", reason="server paused or access changed", channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
@@ -4590,8 +4615,11 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
 
                 # Rare human behaviour: fix a small slip right after sending.
                 if random.random() < config["bot"].get("edit_after_send_chance", 0.015):
-                    asyncio.create_task(_maybe_edit_after_send(sent_msg, chunk))
+                    asyncio.create_task(_maybe_edit_after_send(sent_msg, chunk, enriched_instructions, prompt))
 
+            except output_guard.OutputBlocked:
+                log_system("[Output privacy] Changed send payload withheld.")
+                return None
             except discord.Forbidden:
                 if in_server(message.channel):
                     log_error("Server Reply Error", "Cannot send in this channel; check channel and thread permissions")

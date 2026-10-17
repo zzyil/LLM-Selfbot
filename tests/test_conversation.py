@@ -28,6 +28,11 @@ def turns(count):
 
 
 class CharacterConversation(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        privacy = patch("app.utils.output_guard._verify", AsyncMock(return_value=True))
+        privacy.start()
+        self.addCleanup(privacy.stop)
+
     def test_social_interpretation_is_opt_in_and_uses_the_selected_character(self):
         cfg = config()
         base = "Different character, age 41, calm temperament."

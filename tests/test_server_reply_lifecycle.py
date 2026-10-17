@@ -151,6 +151,8 @@ class ChannelReplyLifecycle(unittest.IsolatedAsyncioTestCase):
                  "_server_channel_active": lambda m, **kw: True, "_server_can_reply": lambda m: True,
                  "_server_chat": self.chat, "asyncio": asyncio, "set_reply_state": self.scope["set_reply_state"],
                  "discord": N(AllowedMentions=N(none=lambda: "none"))}
+        from app.utils.output_guard import Delivery
+        sends.update(delivery=Delivery((sends["chunk"],)), i=0)
         compile_functions({"_send_chunk"}, sends)
 
         async def respond(message, history, directed):

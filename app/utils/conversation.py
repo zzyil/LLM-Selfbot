@@ -561,11 +561,15 @@ def valid_reaction(text, plan):
 def model_history(history, config=None, *, for_summary=False):
     """Keep logs intact; quarantine control requests and stop imitating replies they may have influenced."""
     from app.utils.humanize import strip_meta
+    from app.utils.output_guard import deterministic_issue
     history = without_slash_history(history, config)
     cleaned = []
     for turn in history:
         if turn.get("role") == "assistant":
-            text = strip_meta(str(turn.get("content") or ""))
+            original = str(turn.get("content") or "")
+            if deterministic_issue(original):
+                continue
+            text = strip_meta(original)
             if not text:
                 continue
             turn = {**turn, "content": text}

@@ -23,7 +23,7 @@ from app.utils.memory import (
 from app.utils.mood import get_mood_prompt
 from app.utils.helpers import load_config, load_instructions, france_time_str
 from app.utils.logger import log_system
-from app.utils import conversation
+from app.utils import conversation, output_guard
 
 def _bot_cfg() -> dict:
     """This account's settings (its persona's, on everyone's), read when they are used: read once as the module
@@ -680,6 +680,9 @@ async def generate_ai_response(msg: IncomingMessage) -> Optional[str]:
             )
         else:
             response = await generate_response(msg.content, enriched, history)
+    except output_guard.OutputBlocked:
+        log_system("[Output privacy] Reply withheld before delivery.")
+        return None
     except Exception as e:
         log_system(f"[Engine] AI error for {msg.user_name}: {e}")
         return None
@@ -701,6 +704,13 @@ async def generate_ai_response(msg: IncomingMessage) -> Optional[str]:
     _trimmed = strip_stage_directions(response)
     if _trimmed and _trimmed != response:
         response = _trimmed
+
+    # Check again after all text changes and before memory/history/media side effects.
+    try:
+        response = await output_guard.check(response, enriched + output_guard.POLICY, msg.content, history=history)
+    except output_guard.OutputBlocked:
+        log_system("[Output privacy] Reply withheld before delivery.")
+        return None
 
     # ── Post-response: memory extraction ── two more sequential model calls, neither of which changes the reply that has already been generated. Awaiting them here delayed every Snapchat reply by however long they took, so they run alongside the send instead.
     _spawn_memory_update(uid, msg.content, response, memory)

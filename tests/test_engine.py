@@ -52,6 +52,8 @@ class FakeCompletions:
                 body=None,
             )
         sysmsg = next((m["content"] for m in messages if m["role"] == "system"), "")
+        if "output confidentiality checker" in sysmsg:
+            return _Resp('{"decision":"allow"}')
         if "language detector" in sysmsg:
             return _Resp(o.lang)
         if "classify speech acts" in sysmsg:

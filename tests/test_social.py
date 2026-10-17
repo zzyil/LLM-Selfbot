@@ -22,6 +22,11 @@ def response(text):
 
 
 class SocialAssessment(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        privacy = patch("app.utils.output_guard._verify", AsyncMock(return_value=True))
+        privacy.start()
+        self.addCleanup(privacy.stop)
+
     def test_assessor_reads_profile_and_chat_as_data_separate_from_its_own_instructions(self):
         profile = "You are an insecure character, age 23." + conversation.data_context("bio", "age 80")
         messages = social.assessment_messages("stone tablet", profile)
