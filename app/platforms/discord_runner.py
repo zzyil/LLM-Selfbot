@@ -1737,8 +1737,11 @@ async def _tg_ipc_loop():
                 _write_result(cmd_id, {"success": False, "reason": "Activate this channel in Servers before asking the character to reply."})
                 return
             if waiting is None:
-                _write_result(cmd_id, {"success": False, "dropped": True, "reason": "nothing is waiting there any more"})
-                return
+                # An owner-requested Reply can recover a skipped message after the live queue cleared.
+                waiting, why = await _latest_server_reply_target(ch)
+                if waiting is None:
+                    _write_result(cmd_id, {"success": False, "dropped": True, "reason": why})
+                    return
             if await _answered_since(waiting):
                 clear_reply_state(waiting.author.id, channel_id=cid)
                 _write_result(cmd_id, {"success": False, "dropped": True,
@@ -5034,6 +5037,8 @@ async def _learn_in_server(author, content):
 
 
 def _finish_server_reply(message, outcome, reason):
+    if outcome != "sent" and reason:
+        log_system(f"[Server routing] {outcome} channel={message.channel.id} message={message.id}: {reason}")
     # A newer message may already own this channel's next reply. Never finish that one here.
     cid = message.channel.id
     if bot.server_waiting.get(cid) is not message:
@@ -5042,6 +5047,19 @@ def _finish_server_reply(message, outcome, reason):
         set_reply_state(message.author.id, "failed", reason=reason, channel_id=cid)
     else:
         clear_reply_state(message.author.id, channel_id=cid)
+
+
+async def _latest_server_reply_target(channel):
+    """Explicit owner Reply only: recover the latest eligible, unanswered channel message."""
+    if not _manual_history_budget.allow():
+        return None, "channel history read limit reached"
+    async for candidate in channel.history(limit=1):
+        if candidate.author.id == bot.selfbot_id:
+            return None, "already answered, the character spoke last"
+        if should_ignore_message(candidate) or not companion_memory.message_allowed(candidate):
+            return None, "the latest channel message is not eligible for a reply"
+        return candidate, ""
+    return None, "no message to reply to"
 
 
 async def _reply_in_server(message, history, directed):

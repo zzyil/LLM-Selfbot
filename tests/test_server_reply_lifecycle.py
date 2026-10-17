@@ -33,7 +33,8 @@ class ChannelReplyLifecycle(unittest.IsolatedAsyncioTestCase):
         self.now = 1000.0
         self.events, self.errors = [], []
         self.bot = N(server_waiting={}, channel_reply_state={}, reply_state={7: {"state": "waiting"}}, waiting_msgs={7: object()})
-        scope = {"bot": self.bot, "time": N(time=lambda: self.now), "emit_chat_event": self.events.append}
+        scope = {"bot": self.bot, "time": N(time=lambda: self.now), "emit_chat_event": self.events.append,
+                 "log_system": lambda text: None}
         compile_functions({"set_reply_state", "clear_reply_state", "_finish_server_reply"}, scope)
         self.finish = scope["_finish_server_reply"]
         self.config = {"names": ["G"], "batch_wait_seconds": 0, "reply_cooldown_seconds": 0, "learn_from_chat": False,

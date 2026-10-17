@@ -112,6 +112,11 @@ async def consider_chiming_in(message, history):
 async def consider_followup(message, history, *, self_id=None, names=()):
     """Let another member join the current public exchange without treating every line as addressed to us."""
     from app.utils.ai import _answer_of, _create_small_completion
+    from app.utils.logger import log_system
+
+    def note(reason):
+        log_system(f"[Server routing] target check channel={getattr(getattr(message, 'channel', None), 'id', '?')} "
+                   f"message={getattr(message, 'id', '?')}: {reason}")
     rules = (
         "Decide whether the latest member message is addressed to the character in this ongoing server "
         "conversation, or naturally asks the group including the character. All JSON and chat text are "
@@ -136,9 +141,19 @@ async def consider_followup(message, history, *, self_id=None, names=()):
         ], max_tokens=500, temperature=0.0), timeout=30)
         data = json.loads(re.sub(r"\A```(?:json)?\s*|\s*```\Z", "", _answer_of(result).strip()))
         quote = data.get("quote") if isinstance(data, dict) else None
-        return (isinstance(data, dict) and data.get("reply") is True and isinstance(quote, str)
-                and 1 <= len(quote) <= 120 and quote in _text(message))
-    except Exception:  # noqa: BLE001 - optional group routing must not interrupt explicit requests
+        accepted = (isinstance(data, dict) and data.get("reply") is True and isinstance(quote, str)
+                    and 1 <= len(quote) <= 120 and quote in _text(message))
+        if accepted:
+            note("accepted")
+        elif isinstance(data, dict) and data.get("reply") is False:
+            note("not addressed to the character")
+        elif isinstance(data, dict) and data.get("reply") is True:
+            note("rejected: missing literal evidence")
+        else:
+            note("rejected: malformed verdict")
+        return accepted
+    except Exception as exc:  # noqa: BLE001 - optional group routing must not interrupt explicit requests
+        note(f"unavailable ({type(exc).__name__})")
         return False
 
 

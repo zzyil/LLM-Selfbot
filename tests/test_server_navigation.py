@@ -162,6 +162,57 @@ class OwnerRoutes(unittest.TestCase):
 
 
 class ServerChatBridge(unittest.IsolatedAsyncioTestCase):
+    def recovery_scope(self, *, own=False, ignored=False, budget=True):
+        tree = ast.parse((ROOT / 'app/platforms/discord_runner.py').read_bytes())
+        functions = [n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef)
+                     and n.name in {'_server_job', '_latest_server_reply_target'}]
+        channel = N(id=CHANNEL)
+        target = N(id=55, content='a current reaction', author=N(id=7 if own else 9),
+                   channel=channel, guild=N(id=GUILD))
+        reads = []
+
+        async def history(**kwargs):
+            reads.append(kwargs)
+            yield target
+
+        channel.history = history
+        bot = N(selfbot_id=7, user=N(id=7), server_waiting={}, get_channel=lambda cid: channel,
+                message_history={'server': []})
+        results = []
+        writer = AsyncMock(return_value='delivered')
+        scope = {'bot': bot, '_server_chat': None,
+                 '_get_server_access': lambda: N(channel=lambda cid: (channel, None),
+                                                activity=N(can_send=lambda ch: True)),
+                 '_manual_history_budget': N(allow=lambda: budget), 'should_ignore_message': lambda m: ignored,
+                 'companion_memory': N(message_allowed=lambda m: True),
+                 '_write_result': lambda cmd, data: results.append(data), '_answered_since': AsyncMock(return_value=False),
+                 'seed_history': AsyncMock(), 'history_key': lambda m: 'server', 'as_turn': lambda m, text: text,
+                 'set_reply_state': lambda *a, **k: None, 'clear_reply_state': lambda *a, **k: None,
+                 'generate_response_and_reply': writer}
+        exec(compile(ast.Module(functions, type_ignores=[]), 'server-recovery', 'exec'), scope)  # noqa: S102
+        return scope, writer, results, reads
+
+    async def test_owner_reply_recovers_the_latest_message_when_the_live_waiting_row_was_cleared(self):
+        scope, writer, results, reads = self.recovery_scope()
+        await scope['_server_job']('reply_user', 'request', CHANNEL, {})
+        writer.assert_awaited_once()
+        self.assertEqual(results[-1], {'success': True})
+        self.assertEqual(reads, [{'limit': 1}])
+
+    async def test_recovery_does_not_repeat_an_answer_or_answer_an_ignored_message(self):
+        for options in ({'own': True}, {'ignored': True}):
+            scope, writer, results, _ = self.recovery_scope(**options)
+            await scope['_server_job']('reply_user', 'request', CHANNEL, {})
+            writer.assert_not_awaited()
+            self.assertFalse(results[-1]['success'])
+
+    async def test_recovery_obeys_the_manual_history_budget(self):
+        scope, writer, results, reads = self.recovery_scope(budget=False)
+        await scope['_server_job']('reply_user', 'request', CHANNEL, {})
+        writer.assert_not_awaited()
+        self.assertEqual(reads, [])
+        self.assertIn('limit', results[-1]['reason'])
+
     async def test_owner_send_supports_files_and_suppresses_mentions(self):
         """Execute the real runner branch without importing or logging into a Discord client."""
         tree = ast.parse((ROOT / "app/platforms/discord_runner.py").read_text())

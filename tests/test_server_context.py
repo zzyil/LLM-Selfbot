@@ -374,6 +374,15 @@ class CurrentServerReplies(unittest.IsolatedAsyncioTestCase):
             with patch.object(ai, "_create_small_completion", new_callable=AsyncMock, return_value=response(json.dumps(raw))):
                 self.assertEqual(await consider_followup(target, []), expected)
 
+    async def test_failed_target_checks_record_a_reason_without_echoing_model_payloads(self):
+        target = message(1, text='a current reaction')
+        with patch.object(ai, '_create_small_completion', AsyncMock(side_effect=TimeoutError('PRIVATE_PAYLOAD'))), \
+                patch('app.utils.logger.log_system') as log:
+            self.assertFalse(await consider_followup(target, []))
+        log.assert_called_once()
+        self.assertIn('unavailable (TimeoutError)', str(log.call_args))
+        self.assertNotIn('PRIVATE_PAYLOAD', str(log.call_args))
+
 
 if __name__ == "__main__":
     unittest.main()

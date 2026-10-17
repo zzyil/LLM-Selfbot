@@ -403,7 +403,11 @@ even if busy traffic evicts the source from the bounded transcript; later
 requests wait for the next turn. Accepted replies have a five-minute age limit
 by default, separate from the two-minute ambient opportunity limit. Retractions,
 source edits/deletions, a manual owner reply or lost access can invalidate a
-reply. Dashboard Reply and Cancel work with this queue. Managed server replies
+reply. Dashboard Reply and Cancel work with this queue. An explicit owner Reply can
+also recover the latest eligible channel message after its waiting row was cleared;
+it reads only the newest message and never repeats an answer when the character
+spoke last. Owner logs distinguish target-check rejection, unavailable checks and
+later scheduling/send skips without recording prompt or rejected-draft contents. Managed server replies
 use one referenced post and at most eight seconds of simulated typing.
 
 Every server turn includes a stable speaker ID, and the selected message stays
