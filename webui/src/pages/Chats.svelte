@@ -257,7 +257,7 @@
   let failedReplies = $state<Set<string>>(new Set());
 
   const statusOf = (u: ChatUser): Status => statusFor(u, { now, paused: entry.paused, failed: failedReplies,
-    offline: u.kind === "server" && !!current?.state && current.state !== "running" });
+    offline: u.kind === "server" && ["stopped", "crashed"].includes(current?.state || "") });
   /** How far through its wait a countdown is, 0 to 1. */
   const progress = (st: Status): number => progressOf(st, now);
 
