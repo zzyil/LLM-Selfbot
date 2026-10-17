@@ -233,6 +233,7 @@ check("an event for someone not listed changes nothing", u === base);
   chats.applyEvent({ t: "msg", target: T, uid: "ch555", kind: "server", text: "hey", mid: "11", ts: 2 });
   chats.applyEvent({ t: "state", target: T, uid: "ch555", state: { state: "writing", since: 2 } });
   channel = chats.trackedChannels(get(chats.serverChannelCache)[T])[0];
+  check("checking output is visible as active work", statusOf({ ...channel, state: { state: "checking", since: 2 } }, { now: 3 }).short === "Checking reply");
   check("queued channel progress appears once under its channel", channel.state?.state === "writing"
     && chats.trackedChannels(get(chats.serverChannelCache)[T]).length === 1);
   chats.applyEvent({ t: "channel_msg", target: T, uid: "ch555", text: "new ambient message", mid: "12", ts: 3 });

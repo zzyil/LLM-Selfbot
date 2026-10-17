@@ -94,6 +94,17 @@ class ChannelReplyLifecycle(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.bot.channel_reply_state[100]["state"], "failed")
         self.assertIn(100, self.bot.server_waiting)
 
+    async def test_actual_timeout_and_privacy_reasons_survive_scheduler_cleanup(self):
+        for status, reason in [('failed', 'reply check timed out'), ('skipped', 'output privacy check withheld the reply')]:
+            async def withheld(message, history, directed, status=status, reason=reason):
+                self.bot.channel_reply_state[100] = {'state': status, 'reason': reason}
+            self.chat.respond = withheld
+            message = self.message(mid=1 if status == "failed" else 2)
+            self.chat.receive(message)
+            await self.settle()
+            self.assertEqual(self.bot.channel_reply_state[100], {'state': status, 'reason': reason})
+            self.assertIs(self.bot.server_waiting[100], message)
+
     async def test_unexpected_error_finishes_one_attempt_and_services_the_next(self):
         started, release = asyncio.Event(), asyncio.Event()
 

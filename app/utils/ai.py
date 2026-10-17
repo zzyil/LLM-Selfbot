@@ -948,6 +948,11 @@ async def _social_reaction(prompt, instructions, history=None):
     return social.fallback(assessment, history)
 
 
+def reply_reference(instructions, *, image=False):
+    from app.utils import reply_format
+    return instructions + (reply_format.INSTRUCTIONS if not image and reply_format.enabled(load_config()) else "") + output_guard.POLICY
+
+
 async def generate_response(prompt, instructions, history=None, *, internal=False):
     """Visible generations pass the confidentiality gate; internal analyses never go to chat."""
     from app.utils import reply_format
@@ -955,7 +960,7 @@ async def generate_response(prompt, instructions, history=None, *, internal=Fals
         with reply_format.scope(False):
             return await _generate_response(prompt, instructions, history)
     bursts = reply_format.enabled(load_config())
-    protected = instructions + (reply_format.INSTRUCTIONS if bursts else "") + output_guard.POLICY
+    protected = reply_reference(instructions)
     with reply_format.scope(bursts):
         text = await _generate_response(prompt, protected, history)
     return await output_guard.check(text, protected, prompt, history=history)

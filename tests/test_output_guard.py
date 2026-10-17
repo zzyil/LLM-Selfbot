@@ -109,7 +109,26 @@ class Verification(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(guard.OutputBlocked) as caught:
                     await guard.check('candidate', REFERENCE)
                 self.assertNotIn(PRIVATE, str(caught.exception))
-                self.assertEqual(caught.exception.reason, 'verification_unavailable')
+                self.assertEqual(caught.exception.reason, 'verification_timeout' if isinstance(failure, TimeoutError) else 'verification_unavailable')
+
+    async def test_local_prefill_gets_a_bounded_longer_timeout(self):
+        with patch('app.utils.providers.job', return_value={'provider': 'local'}):
+            self.assertEqual(guard.verification_timeout(), 120)
+        with patch('app.utils.providers.job', return_value={'provider': 'groq'}):
+            self.assertEqual(guard.verification_timeout(), 20)
+
+    async def test_checking_progress_is_scoped_and_not_reported_for_cached_approval(self):
+        calls = []
+        with patch.object(guard, '_verify', AsyncMock(return_value=True)):
+            with guard.progress(lambda: calls.append('checking')):
+                await guard.check('yo', REFERENCE)
+                await guard.check('yo', REFERENCE)
+            await guard.check('new reply', REFERENCE)
+        self.assertEqual(calls, ['checking'])
+        for code in ['verification_timeout', 'verification_unavailable', 'invalid_reply_envelope']:
+            self.assertEqual(guard.blocked_status(guard.OutputBlocked(code))[0], 'failed')
+        self.assertEqual(guard.blocked_status(guard.OutputBlocked(PRIVATE)),
+                         ('skipped', 'output privacy check withheld the reply'))
 
     async def test_deterministic_rejection_does_not_consult_an_overruled_verifier(self):
         with patch.object(guard, '_verify', AsyncMock(return_value=True)) as judge:
@@ -141,6 +160,18 @@ class Verification(unittest.IsolatedAsyncioTestCase):
             for i in range(270):
                 await guard.check(f'hello {i}', REFERENCE)
         self.assertLessEqual(len(guard._APPROVALS), 256)
+
+    async def test_generation_and_transport_share_only_identical_complete_references(self):
+        with patch('app.utils.reply_format.enabled', return_value=True), \
+                patch.object(ai, '_generate_response', AsyncMock(return_value='yo')), \
+                patch.object(guard, '_verify', AsyncMock(return_value=True)) as judge:
+            reply = await ai.generate_response('hi', REFERENCE)
+            await guard.check(reply, ai.reply_reference(REFERENCE), 'hi')
+            self.assertEqual(judge.await_count, 1)
+            await guard.check(reply + 'o', ai.reply_reference(REFERENCE), 'hi')
+            self.assertEqual(judge.await_count, 2)
+            await guard.check(reply, ai.reply_reference(REFERENCE, image=True), 'hi')
+            self.assertEqual(judge.await_count, 3)
 
     async def test_cancellation_is_propagated(self):
         with patch.object(guard, '_verify', AsyncMock(side_effect=asyncio.CancelledError)):

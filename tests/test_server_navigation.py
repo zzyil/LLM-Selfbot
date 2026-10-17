@@ -188,7 +188,8 @@ class ServerChatBridge(unittest.IsolatedAsyncioTestCase):
                  '_write_result': lambda cmd, data: results.append(data), '_answered_since': AsyncMock(return_value=False),
                  'seed_history': AsyncMock(), 'history_key': lambda m: 'server', 'as_turn': lambda m, text: text,
                  'set_reply_state': lambda *a, **k: None, 'clear_reply_state': lambda *a, **k: None,
-                 'generate_response_and_reply': writer}
+                 'generate_response_and_reply': writer, 'emit_chat_event': lambda event: None,
+                 'server_row': lambda message: {'mid': str(message.id), 'kind': 'server'}}
         exec(compile(ast.Module(functions, type_ignores=[]), 'server-recovery', 'exec'), scope)  # noqa: S102
         return scope, writer, results, reads
 
@@ -196,6 +197,7 @@ class ServerChatBridge(unittest.IsolatedAsyncioTestCase):
         scope, writer, results, reads = self.recovery_scope()
         await scope['_server_job']('reply_user', 'request', CHANNEL, {})
         writer.assert_awaited_once()
+        self.assertIs(scope['bot'].server_waiting[CHANNEL], writer.await_args.args[0])
         self.assertEqual(results[-1], {'success': True})
         self.assertEqual(reads, [{'limit': 1}])
 

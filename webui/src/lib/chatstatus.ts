@@ -74,6 +74,9 @@ export function statusOf(u: ChatUser, ctx: StatusContext): Status {
                  title: c ? `Replies in ${c}` : "Replying any moment",
                  detail: "Waiting in case they send more, then it reads everything and answers.",
                  eta: s.eta, since: s.since };
+      case "checking":
+        return { phase: "live", tone: "accent", step: 2, short: "Checking reply", title: "Checking the reply",
+                 detail: "The local output check is running. Long context can take a minute." };
       case "writing":
         return { phase: "live", tone: "accent", step: 2, short: "Writing a reply", title: "Writing a reply",
                  detail: "The model is writing it now." };

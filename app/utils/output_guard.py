@@ -9,6 +9,8 @@ import re
 import time
 import unicodedata
 from collections import OrderedDict
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from urllib.parse import unquote
 
@@ -67,6 +69,32 @@ _APPROVALS = OrderedDict()
 _TTL = 300
 _MAX_TEXT = 24000
 _MAX_REFERENCE = 200000
+_PROGRESS = ContextVar("reply_check_progress", default=None)
+
+
+@contextmanager
+def progress(callback):
+    token = _PROGRESS.set(callback)
+    try:
+        yield
+    finally:
+        _PROGRESS.reset(token)
+
+
+def blocked_status(error):
+    """Only fixed public diagnostics, never arbitrary exception text or draft contents."""
+    return {
+        "verification_timeout": ("failed", "reply check timed out"),
+        "verification_unavailable": ("failed", "reply checker unavailable"),
+        "invalid_reply_envelope": ("failed", "model returned an invalid reply format"),
+    }.get(error.reason, ("skipped", "output privacy check withheld the reply"))
+
+
+def verification_timeout():
+    from app.utils import providers
+    from app.utils.helpers import load_config
+    # Local prompt prefill alone can exceed 20s for a full character reference.
+    return 120 if providers.job(load_config(), "small")["provider"] == "local" else 20
 
 
 class OutputBlocked(Exception):
@@ -146,7 +174,7 @@ async def _verify(text, instructions, prompt, history):
             "recent_dialogue": _dialogue(history),
             "candidate": text,
         }, ensure_ascii=False)},
-    ], max_tokens=96, temperature=0), timeout=20)
+    ], max_tokens=96, temperature=0), timeout=verification_timeout())
     # Only the literal allow object is accepted, including optional JSON whitespace.
     # Duplicate keys, prose, extra fields and escaped-key tricks must fail closed.
     return re.fullmatch(r'\s*\{\s*"decision"\s*:\s*"allow"\s*\}\s*', _answer_of(result)) is not None
@@ -167,10 +195,15 @@ async def check(text, instructions, prompt="", *, history=None):
     if now - _APPROVALS.get(key, -_TTL) < _TTL:
         return text
     try:
+        callback = _PROGRESS.get()
+        if callback is not None:
+            callback()
         if not await _verify(text, instructions, prompt, history):
             raise OutputBlocked("disclosure_or_uncertainty")
     except OutputBlocked:
         raise
+    except TimeoutError:
+        raise OutputBlocked("verification_timeout") from None
     except (Exception, SystemExit):  # noqa: BLE001 - every verifier failure must withhold output
         raise OutputBlocked("verification_unavailable") from None
     _APPROVALS[key] = time.monotonic()

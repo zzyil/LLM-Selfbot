@@ -39,7 +39,7 @@
   const pendingGroups = $derived([...new Set(pending.map((row) => row.guild_id || row.guild_name || "Server"))]
     .map((id) => ({ id, name: pending.find((row) => (row.guild_id || row.guild_name || "Server") === id)?.guild_name || "Server",
                    channels: pending.filter((row) => (row.guild_id || row.guild_name || "Server") === id) })));
-  const stateOf = (row: ChatUser) => ({ waiting: "Waiting to reply", writing: "Writing", sending: "Sending", queued: "Queued",
+  const stateOf = (row: ChatUser) => ({ waiting: "Waiting to reply", writing: "Writing", checking: "Checking reply", sending: "Sending", queued: "Queued",
     cooldown: "Cooldown", skipped: "Skipped", failed: "Needs attention" }[row.state?.state || ""] || "Awaiting response");
   async function openPending(row: ChatUser) {
     const account = target;

@@ -1113,7 +1113,7 @@
   let rowBusy = $state<Record<string, "cancel" | "ignore">>({});
 
   const cancellable = (u: ChatUser) =>
-    (!!u.state && ["waiting", "writing", "cooldown", "queued"].includes(u.state.state))
+    (!!u.state && ["waiting", "writing", "checking", "cooldown", "queued"].includes(u.state.state))
     || (!u.state && !!u.reply_at && u.reply_at > now);
 
   async function reply(u: ChatUser) {

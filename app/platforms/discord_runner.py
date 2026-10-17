@@ -913,7 +913,7 @@ def clear_reply_state(uid, channel_id=None):
 
 
 # A reply is lined up for someone in these states; "sending" is the bot's own reply going out.
-_PENDING_STATES = ("waiting", "writing", "cooldown", "queued")
+_PENDING_STATES = ("waiting", "writing", "checking", "cooldown", "queued")
 
 
 def _people_waiting() -> int:
@@ -1752,6 +1752,8 @@ async def _tg_ipc_loop():
                 return
             if _server_chat is not None:
                 _server_chat.cancel(cid)
+            bot.server_waiting[cid] = waiting
+            emit_chat_event({"t": "msg", "uid": f"ch{cid}", **server_row(waiting)})
             hk = history_key(waiting)
             await seed_history(hk, waiting)
             history = (_server_chat.history(cid) if _server_chat is not None else []) \
@@ -1770,6 +1772,10 @@ async def _tg_ipc_loop():
                 # No model can reply right now: the reason, said once already, not a line for each channel.
                 set_reply_state(waiting.author.id, "failed", reason=_why_not, channel_id=waiting.channel.id if getattr(waiting, "guild", None) is not None else None)
                 _write_result(cmd_id, {"success": False, "retryable": True, "reason": _why_not})
+            elif ((_terminal := getattr(bot, "channel_reply_state", {}).get(cid))
+                  and _terminal.get("state") in {"skipped", "failed"}):
+                _write_result(cmd_id, {"success": False, "retryable": _terminal["state"] == "failed",
+                                       "reason": _terminal.get("reason") or "reply withheld"})
             else:
                 log_error("Reply", f"No reply sent in #{getattr(ch, 'name', cid)}: the model returned nothing "
                                    f"or the send was refused. It stays on the waiting list.")
@@ -4188,19 +4194,25 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
         except Exception:
             pass
 
+    public_reference = ai_module.reply_reference(enriched_instructions, image=bool(image_url))
+
+    def checking_reply():
+        set_reply_state(uid, "checking", channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
+
     for attempt in range(max_retries):
         try:
-            if not bot.realistic_typing:
-                async with message.channel.typing():
+            with output_guard.progress(checking_reply):
+                if not bot.realistic_typing:
+                    async with message.channel.typing():
+                        if image_url:
+                            response = await generate_response_image(prompt, enriched_instructions, image_url, history)
+                        else:
+                            response = await generate_response(prompt, enriched_instructions, history)
+                else:
                     if image_url:
                         response = await generate_response_image(prompt, enriched_instructions, image_url, history)
                     else:
                         response = await generate_response(prompt, enriched_instructions, history)
-            else:
-                if image_url:
-                    response = await generate_response_image(prompt, enriched_instructions, image_url, history)
-                else:
-                    response = await generate_response(prompt, enriched_instructions, history)
 
             if response and is_refusal(response):
                 # never send a refusal and never go silent: replace it with a short confused reaction, which is what a real person sends when the conversation takes a weird turn
@@ -4215,9 +4227,10 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
 
                 break
 
-        except output_guard.OutputBlocked:
-            set_reply_state(uid, "skipped", reason="output privacy check withheld the reply", channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
-            log_system("[Output privacy] Reply withheld; no retry or fallback was sent.")
+        except output_guard.OutputBlocked as exc:
+            state, why = output_guard.blocked_status(exc)
+            set_reply_state(uid, state, reason=why, channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
+            log_system(f"[Output privacy] Reply withheld: {why}; no retry or fallback was sent.")
             return None
         except Exception as e:
             error_msg = str(e)
@@ -4293,9 +4306,11 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
         return None
 
     try:
-        response = await output_guard.check(response, enriched_instructions + output_guard.POLICY, prompt, history=history)
-    except output_guard.OutputBlocked:
-        set_reply_state(uid, "skipped", reason="output privacy check withheld the reply", channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
+        with output_guard.progress(checking_reply):
+            response = await output_guard.check(response, public_reference, prompt, history=history)
+    except output_guard.OutputBlocked as exc:
+        state, why = output_guard.blocked_status(exc)
+        set_reply_state(uid, state, reason=why, channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
         log_system("[Output privacy] Reply withheld before delivery.")
         return None
     response = strip_meta(response).replace("\u2014", "").replace("\u2013", "")
@@ -4439,9 +4454,11 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
         if chunk.strip():
             final_chunks.append(chunk)
     try:
-        delivery = await output_guard.prepare(final_chunks, enriched_instructions + output_guard.POLICY, prompt, history=history)
-    except output_guard.OutputBlocked:
-        set_reply_state(uid, "skipped", reason="output privacy check withheld the reply", channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
+        with output_guard.progress(checking_reply):
+            delivery = await output_guard.prepare(final_chunks, public_reference, prompt, history=history)
+    except output_guard.OutputBlocked as exc:
+        state, why = output_guard.blocked_status(exc)
+        set_reply_state(uid, state, reason=why, channel_id=message.channel.id if getattr(message, "guild", None) is not None else None)
         log_system("[Output privacy] Final output withheld before any chunk was sent.")
         return None
     chunks = delivery.parts
@@ -5044,11 +5061,16 @@ async def _learn_in_server(author, content):
 
 
 def _finish_server_reply(message, outcome, reason):
-    if outcome != "sent" and reason:
-        log_system(f"[Server routing] {outcome} channel={message.channel.id} message={message.id}: {reason}")
-    # A newer message may already own this channel's next reply. Never finish that one here.
     cid = message.channel.id
-    if bot.server_waiting.get(cid) is not message:
+    owns_attempt = bot.server_waiting.get(cid) is message
+    current = (getattr(bot, "channel_reply_state", {}).get(cid) or {}) if owns_attempt else {}
+    preserve = outcome == "failed" and current.get("state") in {"skipped", "failed"}
+    if preserve:
+        outcome, reason = current["state"], current.get("reason") or reason
+    if outcome != "sent" and reason:
+        log_system(f"[Server routing] {outcome} channel={cid} message={message.id}: {reason}")
+    # A newer message may already own this channel's next reply. Never finish that one here.
+    if not owns_attempt or preserve:
         return
     if outcome == "failed":
         set_reply_state(message.author.id, "failed", reason=reason, channel_id=cid)
