@@ -144,6 +144,8 @@ class ServerConversations(unittest.IsolatedAsyncioTestCase):
             "time": types.SimpleNamespace(time=lambda: 1000), "CONVERSATION_TIMEOUT": 60,
             "in_server": lambda ch: isinstance(ch, text_channel),
             "_server_can_reply": lambda m: True, "_get_server_chat": lambda: self.chat,
+            "_server_channel_active": lambda m, **kw: True,
+            "_get_server_access": lambda: types.SimpleNamespace(activity=types.SimpleNamespace(observe=lambda m: None)),
             "_observe_server_lingo": lambda m: vocabulary_seen.append(m.id),
             "record_user_message": lambda uid, name, account: seen.append(uid), "ACCOUNT_INDEX": 1,
         }

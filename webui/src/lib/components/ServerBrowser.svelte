@@ -8,10 +8,13 @@
   import Button from "./Button.svelte";
   import Icon from "./Icon.svelte";
   import type { ChatUser } from "../chats";
+  import { refreshServerChannels } from "../chats";
 
   type Guild = { id: string; name: string; icon: string; members?: number };
   type Channel = { id: string; name: string; category: string; thread: boolean; parent: string;
-                   topic: string; can_read: boolean; can_send: boolean; reason: string; slowmode: number };
+                   topic: string; can_read: boolean; can_send: boolean; reason: string; slowmode: number;
+                   active: boolean; origin: "selected" | "discovered" | "inactive";
+                   discovery?: { source_channel_name: string; added_at: number } };
   let { target, selectedId, pending = [], onselect, onclear }: { target: string; selectedId: string; pending?: ChatUser[]; onselect: (channel: ChatUser) => void; onclear: () => void } = $props();
   let servers = $state<Guild[]>([]);
   let guild = $state("");
@@ -29,6 +32,10 @@
   let generation = 0;
   let joinedPending = $state<Guild | null>(null);
   let channelLoading = $state(false);
+  let chosen = $state<string[]>([]);
+  let explore = $state(true);
+  let dirty = $state(false);
+  let saving = $state(false);
   const pendingGroups = $derived([...new Set(pending.map((row) => row.guild_id || row.guild_name || "Server"))]
     .map((id) => ({ id, name: pending.find((row) => (row.guild_id || row.guild_name || "Server") === id)?.guild_name || "Server",
                    channels: pending.filter((row) => (row.guild_id || row.guild_name || "Server") === id) })));
@@ -36,8 +43,9 @@
     cooldown: "Cooldown", skipped: "Skipped", failed: "Needs attention" }[row.state?.state || ""] || "Awaiting response");
   async function openPending(row: ChatUser) {
     const account = target;
+    const expectedGuild = row.guild_id || guild;
     if (row.guild_id && row.guild_id !== guild) await chooseGuild(row.guild_id);
-    if (target !== account) return;
+    if (target !== account || guild !== expectedGuild) return;
     const channel = channels.find((item) => item.id === row.channel_id);
     if (channel) await open(channel);
     else error = "This channel is not available in the current server list. Refresh servers and try again.";
@@ -52,6 +60,7 @@
     const account = target;
     untrack(() => {
       generation++; guild = ""; channels = []; servers = []; error = ""; preview = null; joinedPending = null;
+      chosen = []; explore = true; dirty = false; saving = false;
       if (account) void load(account);
     });
   });
@@ -76,21 +85,45 @@
       error = "";
       if (!guild && servers.length) await chooseGuild(servers[0].id);
       else if (guild && !joinedPending && !servers.some((s) => s.id === guild)) { guild = ""; channels = []; onclear(); }
+      else if (quiet && guild && !dirty && !saving && !channelLoading) await readChannels(guild, account, token);
     } catch (e: any) { if (target === account && token === generation) error = e.message; }
     finally { if (target === account && token === generation) loading = false; }
   }
   async function chooseGuild(id: string) {
-    if (joining) return;
+    if (joining || saving) return;
     if (guild !== id) onclear();
-    guild = id; channels = []; query = ""; channelLoading = true;
+    guild = id; channels = []; chosen = []; query = ""; dirty = false; channelLoading = true;
     const account = target, token = generation;
+    await readChannels(id, account, token);
+    if (guild === id && account === target && token === generation) channelLoading = false;
+  }
+  async function readChannels(id: string, account: string, token: number) {
     try {
       const data = await api.serverChannels(id, account);
-      if (guild !== id || account !== target || token !== generation) return;
+      if (guild !== id || account !== target || token !== generation || dirty || saving) return;
       if (!data.ok) throw new Error(data.reason || "Could not read channels");
-      channels = data.channels; error = "";
+      channels = data.channels; chosen = channels.filter((c) => c.active).map((c) => c.id);
+      explore = data.activity?.explore ?? true; error = "";
     } catch (e: any) { if (guild === id && account === target && token === generation) error = e.message; }
-    finally { if (guild === id && account === target && token === generation) channelLoading = false; }
+  }
+  function toggleChannel(id: string, checked: boolean) {
+    chosen = checked ? [...chosen, id] : chosen.filter((cid) => cid !== id);
+    dirty = true;
+  }
+  async function saveActivity() {
+    if (saving || !guild) return;
+    const account = target, id = guild, token = generation;
+    saving = true; error = "";
+    try {
+      const data = await api.serverActivity(id, account, chosen, explore);
+      if (guild !== id || account !== target || token !== generation) return;
+      if (!data.ok) throw new Error(data.reason || "Could not save channel activity");
+      channels = data.channels; chosen = channels.filter((c) => c.active).map((c) => c.id);
+      explore = data.activity.explore; dirty = false;
+      toast(chosen.length ? "Channel activity saved" : "Automatic activity stopped in this server", "ok");
+      void refreshServerChannels(account, { force: true, quiet: true });
+    } catch (e: any) { if (guild === id && account === target && token === generation) error = e.message; }
+    finally { if (account === target && token === generation) saving = false; }
   }
   async function watch(id: string, account: string) {
     try { await api.serverWatch(id, account); } catch { /* the next heartbeat retries; history remains readable */ }
@@ -98,6 +131,7 @@
   async function open(channel: Channel) {
     if (!current || !channel.can_read) return;
     onselect({ id: `ch${channel.id}`, kind: "server", channel_id: channel.id, name: `#${channel.name}`,
+               channel_name: channel.name, guild_id: current.id, guild_name: current.name,
                where: `#${channel.name} · ${current.name}`, snippet: "", count: 0,
                can_send: channel.can_send, channel_reason: channel.reason });
     await watch(channel.id, target);
@@ -156,18 +190,40 @@
   {#if loading && !servers.length}<p class="sb-empty">Loading this account's servers…</p>
   {:else if !servers.length && !joinedPending}<p class="sb-empty">No joined servers yet. Paste an invite with Join server to get started.</p>
   {:else}
-    <label class="sb-label">Server<select value={guild} onchange={(e) => chooseGuild(e.currentTarget.value)} disabled={joining}><option value="" disabled>Choose a server</option>{#each servers as server (server.id)}<option value={server.id}>{server.name}</option>{/each}</select></label>
+    <label class="sb-label">Server<select value={guild} onchange={(e) => chooseGuild(e.currentTarget.value)} disabled={joining || saving}><option value="" disabled>Choose a server</option>{#each servers as server (server.id)}<option value={server.id}>{server.name}</option>{/each}</select></label>
     {#if joinedPending}<p class="sb-empty">Waiting for Discord to finish loading {joinedPending.name}. Refresh servers in a moment.</p>{/if}
+    {#if guild && !joinedPending}
+      <section class="sb-activity" aria-label="Channel activity settings">
+        <h3>Channel activity <span>{chosen.length} active{dirty ? " · unsaved" : ""}</span></h3>
+        <p>Check the channels where the character should start. Opening a channel only lets you browse it.</p>
+        <label class="sb-explore"><input type="checkbox" checked={explore} disabled={saving} onchange={(e) => { explore = e.currentTarget.checked; dirty = true; }} />Explore through conversations</label>
+        <p>After chatting, it can follow invitations or channel references into other public channels. Turning a channel off prevents rediscovery. No channels selected means no automatic activity.</p>
+        <Button size="sm" loading={saving} disabled={!dirty || channelLoading} onclick={saveActivity}>Save channel activity</Button>
+      </section>
+    {/if}
     <label class="sb-search"><Icon name="search" size={12} /><input bind:value={query} placeholder="Find a channel" aria-label="Find a server channel" /></label>
     <div class="sb-channels">
       {#if channelLoading}<p class="sb-empty">Loading channels…</p>{:else if !channels.length}<p class="sb-empty">No readable text channels or active threads. Complete any server verification in Discord, then refresh.</p>{:else if !groups.length}<p class="sb-empty">No matching channels.</p>{/if}
-      {#each groups as group (group.name)}<section><h3>{group.name}</h3>{#each group.channels as channel (channel.id)}<button class="sb-channel" class:chosen={selectedId === `ch${channel.id}`} disabled={!channel.can_read} onclick={() => open(channel)} title={channel.topic || channel.reason || channel.name}><span class="sb-hash">{channel.thread ? "↳" : "#"}</span><span class="sb-channel-name">{channel.name}{#if channel.thread}<small>in #{channel.parent}</small>{/if}{#if pending.find((row) => row.channel_id === channel.id)}{@const row = pending.find((row) => row.channel_id === channel.id)!}<small class="sb-status">{stateOf(row)}</small>{/if}</span>{#if !channel.can_send}<Icon name="eye" size={11} />{/if}</button>{/each}</section>{/each}
+      {#each groups as group (group.name)}<section><h3>{group.name}</h3>{#each group.channels as channel (channel.id)}
+        <div class="sb-channel-row">
+          <input class="sb-channel-check" type="checkbox" aria-label={`Activate #${channel.name}`} checked={chosen.includes(channel.id)} disabled={!channel.can_read || saving} onchange={(e) => toggleChannel(channel.id, e.currentTarget.checked)} />
+          <button class="sb-channel" class:chosen={selectedId === `ch${channel.id}`} disabled={!channel.can_read} onclick={() => open(channel)} title={channel.topic || channel.reason || channel.name}><span class="sb-hash">{channel.thread ? "↳" : "#"}</span><span class="sb-channel-name">{channel.name}{#if channel.thread}<small>in #{channel.parent}</small>{/if}
+            <small class:sb-status={channel.active}>{channel.active ? (channel.origin === "discovered" ? `Discovered via #${channel.discovery?.source_channel_name || "conversation"}` : "Selected") : "Inactive"}</small>
+            {#if pending.find((row) => row.channel_id === channel.id)}{@const row = pending.find((row) => row.channel_id === channel.id)!}<small class="sb-status">{stateOf(row)}</small>{/if}</span>{#if !channel.can_send}<Icon name="eye" size={11} />{/if}</button>
+        </div>
+      {/each}</section>{/each}
     </div>
     <p class="sb-foot">Text channels and accessible active threads. <a href="#/memory" onclick={() => { viewPersona.set(persona); memorySection.set("servers"); }}>Server memories →</a></p>
   {/if}
 </div>
 
 <style>
+  .sb-activity { border: 1px solid var(--color-edge); border-radius: 12px; padding: 10px; display: grid; gap: 8px; flex-shrink: 0; }
+  .sb-activity h3 { padding: 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; } .sb-activity h3 span { text-transform: none; letter-spacing: 0; color: var(--color-muted); }
+  .sb-activity p { font-size: 10px; line-height: 1.5; color: var(--color-muted); }
+  .sb-explore { display: flex; align-items: center; gap: 7px; font-size: 11px; color: var(--color-ink); } .sb-explore input, .sb-channel-check { width: 14px; height: 14px; flex-shrink: 0; accent-color: var(--color-accent); }
+  .sb-channel-row { display: flex; align-items: center; gap: 3px; } .sb-channel-row .sb-channel { min-width: 0; flex: 1; }
+  .sb-browser { overflow-y: auto; } .sb-browser .sb-channels { min-height: 160px; flex: 1 0 160px; }
   .sb-pending { border: 1px solid var(--color-edge); border-radius: 12px; padding: 9px; max-height: 230px; overflow: auto; flex-shrink: 0; }
   .sb-pending h3 { padding: 0 0 8px; display: flex; justify-content: space-between; } .sb-pending h4 { font-size: 11px; color: var(--color-muted); padding: 5px 4px; }
   .sb-pending-row { display: block; width: 100%; text-align: left; padding: 9px 5px; border-radius: 8px; } .sb-pending-row:hover, .sb-pending-row.chosen { background: color-mix(in srgb, var(--color-accent) 9%, transparent); }

@@ -252,12 +252,15 @@ class Vocabulary(unittest.IsolatedAsyncioTestCase):
         tree = ast.parse((ROOT / "app/platforms/discord_runner.py").read_text())
         node = next(item for item in tree.body if isinstance(item, ast.FunctionDef) and item.name == "_lingo_can_learn")
         bot = types.SimpleNamespace(allow_server=True, paused=False, paused_users=set(), ignore_users=set(), selfbot_id=999)
-        namespace = {"bot": bot, "companion_memory": types.SimpleNamespace(
+        namespace = {"bot": bot, "_server_channel_active": lambda msg: True, "companion_memory": types.SimpleNamespace(
             settings=lambda: {"enabled": False}, message_allowed=lambda msg: True)}
         exec(compile(ast.Module(body=[node], type_ignores=[]), "runner-vocabulary", "exec"), namespace)  # noqa: S102 - exercise the actual hook without Discord login
         can_learn = namespace["_lingo_can_learn"]
         target = message()
         self.assertTrue(can_learn(target))
+        namespace["_server_channel_active"] = lambda msg: False
+        self.assertFalse(can_learn(target))
+        namespace["_server_channel_active"] = lambda msg: True
         bot.paused = True
         self.assertFalse(can_learn(target))
         bot.paused = False

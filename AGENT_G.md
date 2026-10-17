@@ -18,7 +18,8 @@ meet in a new server months later. The relationship and remembered interests are
 still there, subject to normal relationship decay. The new channel gets its own
 short conversation history so unrelated messages don't get mixed together.
 
-The preset follows servers the account belongs to, including future memberships.
+The character carries into servers the account belongs to, including future memberships.
+Choose its starting channels in Servers before enabling activity in each community.
 Join a server normally with that Discord account when ready; the app doesn't
 accept invitations or join servers on its own. Keep the same persona assigned
 to the account to keep the same character. Chat vibe changes how it expresses
@@ -50,8 +51,8 @@ your Discord user ID. Enable Discord Developer Mode to copy IDs.
 .venv/bin/python main.py
 ```
 
-No server ID is needed for the character to follow the account into future servers.
-If you want to restrict its participation, pass `--servers SERVER_ID` or
+No server ID is needed in the preset for future memberships. Select starting channels
+in the dashboard after joining each server. To further restrict its access, pass `--servers SERVER_ID` or
 `--channels CHANNEL_ID`; supplying either option disables automatic participation
 in other joined servers. Both accept comma-separated IDs.
 
@@ -80,8 +81,9 @@ Copy `resources/agent-g-instructions.txt` into your persona's instructions, or
 edit its personality in the existing Persona page. Credentials stay in the app's
 ignored `config/.env`. The preset leaves account services stopped; add an account
 and start it explicitly from the dashboard. With `follow_joined_servers: false`,
-empty channel and server lists observe and answer nothing. Threads inherit an allowed parent channel by default;
-set `include_threads: false` to require their own channel IDs. DMs and group chats
+empty channel and server lists observe and answer nothing. At the persona access layer,
+threads inherit an allowed parent by default; `include_threads: false` narrows that scope.
+The dashboard activity selection additionally requires each thread to be selected or discovered. DMs and group chats
 need their own channel IDs and are disabled by the preset; enable them if needed.
 
 `bot.local.only` filters all model chains to local providers and disables the
@@ -104,6 +106,33 @@ writing and sending state. Changing speakers updates the latest-message attribut
 without creating a contact or changing that person's DM status. Contact bulk replies and
 past conversations exclude server channels and members seen only in server traffic.
 People and relationships memory still follows the same person across shared communities.
+
+Server activity starts from an explicit channel selection per account. Check channels in
+**Servers → Channel activity** and press **Save channel activity**. Until at least one
+channel is selected, that server has no automatic replies, observation or new learning.
+Browsing history and sending your own messages remain available without activating the
+character. Existing persona/server restrictions still apply. Threads need their own
+selection or discovery; selecting a parent does not activate every thread.
+
+**Explore through conversations** is enabled for a new selection. In an active channel,
+four accepted messages spanning at least 30 seconds can lead to a new public channel
+through a concrete channel mention, unique `#name`, or same-server Discord channel link.
+The local background model checks for a genuine invitation or an ongoing discussion that
+moved there. Plain mentions, warnings, roleplay and account-control requests do not count.
+The destination must be readable, within the account's existing access, and public; private
+threads and restricted channels require owner selection. Discovery starts listening to
+fresh traffic there, using the existing reply/chiming rules rather than posting an
+immediate greeting or scraping all channels.
+
+Only one discovery assessment runs at once, at most once per 90 seconds. Additions are
+spaced by ten minutes and limited to ten per server per day. Discovered channels show
+**Discovered via #source** in the picker. Uncheck one and save to prevent rediscovery;
+checking it again restores access. Clearing the selection stops the server's activity.
+Selection changes invalidate pending discovery and cancel queued channel replies;
+automatic sends re-check access after generation and before transmission. The local
+`config/server_channels_ACCOUNT.json` file preserves selected/discovered/blocked channels
+and source IDs across restarts, independently for each account. This is channel routing,
+not a change to the shared personality or people/relationship memory.
 
 The server picker lists that account's joined communities. Browse text channels by
 category and accessible active threads, read recent messages, scroll back, send text

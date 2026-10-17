@@ -1252,6 +1252,22 @@ async def server_channels(request: Request, guild_id: str, target: str = ""):
     return await _server_action(request, target, "servers_channels", {"guild_id": guild})
 
 
+@router.put("/api/servers/{guild_id}/activity")
+async def server_activity(request: Request, guild_id: str):
+    from app.utils.discord_servers import snowflake
+    body = await request.json()
+    selected, explore = body.get("selected_channel_ids"), body.get("explore")
+    if not isinstance(selected, list) or len(selected) > 512 or type(explore) is not bool:
+        raise HTTPException(status_code=400, detail="Choose channels and whether conversation exploration is enabled.")
+    try:
+        guild = str(snowflake(guild_id))
+        channels = list(dict.fromkeys(str(snowflake(cid)) for cid in selected))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return await _server_action(request, body.get("target"), "servers_activity",
+                                {"guild_id": guild, "selected_channel_ids": channels, "explore": explore})
+
+
 @router.post("/api/servers/invite")
 async def server_invite(request: Request):
     from app.utils.discord_servers import invite_code

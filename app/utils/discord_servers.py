@@ -57,8 +57,9 @@ def error_result(exc):
 
 
 class ServerAccess:
-    def __init__(self, client, clock=time.monotonic):
+    def __init__(self, client, clock=time.monotonic, activity=None):
         self.client, self.clock = client, clock
+        self.activity = activity
         self.watching = OrderedDict()
         self.join_lock = asyncio.Lock()
         self.joined = OrderedDict()
@@ -101,9 +102,11 @@ class ServerAccess:
                          "category_position": getattr(category, "position", -1),
                          "position": getattr(parent or channel, "position", 0),
                          "can_read": bool(permissions.read_message_history), "can_send": not reason,
-                         "reason": reason, "slowmode": getattr(channel, "slowmode_delay", 0)})
+                         "reason": reason, "slowmode": getattr(channel, "slowmode_delay", 0),
+                         **(self.activity.status(channel) if self.activity is not None else {})})
         rows.sort(key=lambda row: (row["category_position"], row["position"], row["thread"], row["name"]))
-        return {"ok": True, "guild": guild_row(guild), "channels": rows}
+        return {"ok": True, "guild": guild_row(guild), "channels": rows,
+                "activity": self.activity.policy(guild.id) if self.activity is not None else None}
 
     def watches(self, channel_id):
         now = self.clock()
@@ -116,6 +119,12 @@ class ServerAccess:
                 return {"ok": True, "servers": [guild_row(g) for g in self.client.guilds]}
             if command == "servers_channels":
                 return self.channels(payload.get("guild_id"))
+            if command == "servers_activity":
+                guild = self.client.get_guild(snowflake(payload.get("guild_id")))
+                if guild is None or self.activity is None:
+                    raise ValueError("Channel activity is unavailable for this server.")
+                self.activity.configure(guild.id, payload.get("selected_channel_ids"), payload.get("explore"))
+                return self.channels(guild.id)
             if command == "servers_watch":
                 channel, _ = self.channel(payload.get("channel_id"))
                 self.watching[channel.id] = self.clock() + 90
