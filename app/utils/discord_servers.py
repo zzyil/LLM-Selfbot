@@ -61,6 +61,7 @@ class ServerAccess:
         self.client, self.clock = client, clock
         self.activity = activity
         self.watching = OrderedDict()
+        self.latest = {}
         self.join_lock = asyncio.Lock()
         self.joined = OrderedDict()
 
@@ -108,10 +109,50 @@ class ServerAccess:
         return {"ok": True, "guild": guild_row(guild), "channels": rows,
                 "activity": self.activity.policy(guild.id) if self.activity is not None else None}
 
+    def active_channels(self):
+        """Persistent selections, independent of panel watches; no Discord history requests."""
+        rows = []
+        if self.activity is None:
+            return rows
+        for guild_id in self.activity.guilds:
+            policy = self.activity.policy(guild_id)
+            for cid in dict.fromkeys([*policy["selected_channel_ids"], *policy["discovered"]]):
+                try:
+                    channel, _ = self.channel(cid)
+                    if not self.activity.allowed(channel):
+                        continue
+                    rows.append({**self.latest.get(channel.id, {}), "id": f"ch{channel.id}", "kind": "server",
+                                 "channel_id": str(channel.id), "channel_name": channel.name,
+                                 "guild_id": str(channel.guild.id), "guild_name": channel.guild.name,
+                                 "name": f"#{channel.name}", "where": f"#{channel.name} · {channel.guild.name}",
+                                 "count": 0, "ignored": False, "state": None, "reply_at": None,
+                                 "snippet": self.latest.get(channel.id, {}).get("snippet", ""),
+                                 "can_send": self.activity.can_send(channel), **self.activity.status(channel)})
+                except ValueError:
+                    continue
+        active = {int(row["channel_id"]) for row in rows}
+        self.latest = {cid: row for cid, row in self.latest.items() if cid in active}
+        return rows
+
+    def record(self, message, row):
+        if self.activity is not None and self.activity.allowed(message.channel):
+            self.latest[message.channel.id] = dict(row)
+
+    def update(self, event):
+        from app.utils.channel_conversations import apply_active_event
+        cid = str(event.get("uid", "")).removeprefix("ch")
+        if cid.isdigit() and int(cid) in self.latest:
+            self.latest[int(cid)] = apply_active_event([self.latest[int(cid)]], event)[0]
+
     def watches(self, channel_id):
         now = self.clock()
         self.watching = OrderedDict((cid, until) for cid, until in self.watching.items() if until > now)
-        return self.watching.get(int(channel_id), 0) > now
+        # Selected/discovered channels keep streaming even after every panel watch expires.
+        try:
+            channel, _ = self.channel(channel_id)
+        except ValueError:
+            return False
+        return (self.activity is not None and self.activity.allowed(channel)) or self.watching.get(channel.id, 0) > now
 
     async def handle(self, command, payload):
         try:

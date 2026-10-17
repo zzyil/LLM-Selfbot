@@ -212,5 +212,40 @@ check("an event for someone not listed changes nothing", u === base);
   api.reply = real;
 }
 
+// Active channels stay tracked without ever entering the DM reply-all queue.
+{
+  const chats = await import("../webui/src/lib/chats.ts");
+  const { statusOf } = await import("../webui/src/lib/chatstatus.ts");
+  const get = (store) => { let v; store.subscribe((x) => (v = x))(); return v; };
+  const T = "discord_1";
+  const row = chats.asChannelConversation({ id: "ch555", kind: "server", channel_id: "555",
+    channel_name: "general", guild_name: "Night Owls", name: "#general", snippet: "", count: 0, active: true });
+  chats.chatCache.set({ [T]: { users: [{ id: "8", name: "Pat", count: 1 }], fetched: 1 } });
+  chats.serverChannelCache.set({ [T]: { channels: [], activeChannels: [row], fetched: 1 } });
+  chats.applyEvent({ t: "channel_msg", target: T, uid: "ch555", text: "hello", mid: "10", ts: 1,
+    author: { id: "9", name: "Taylor" } });
+  let channel = chats.trackedChannels(get(chats.serverChannelCache)[T])[0];
+  check("background channel activity updates preview but never creates a pending reply",
+    channel.text === "hello" && channel.count === 0 && get(chats.serverChannelCache)[T].channels.length === 0);
+  check("idle channel says listening instead of not picked up", statusOf(channel, { now: 10000 }).phase === "idle");
+  check("a stopped account is never shown as listening", statusOf(channel, { now: 10000, offline: true }).phase === "off");
+  check("the contact inbox and DM bulk queue stay separate", chats.entry(T).users.map((u) => u.id).join() === "8");
+  chats.applyEvent({ t: "msg", target: T, uid: "ch555", kind: "server", text: "hey", mid: "11", ts: 2 });
+  chats.applyEvent({ t: "state", target: T, uid: "ch555", state: { state: "writing", since: 2 } });
+  channel = chats.trackedChannels(get(chats.serverChannelCache)[T])[0];
+  check("queued channel progress appears once under its channel", channel.state?.state === "writing"
+    && chats.trackedChannels(get(chats.serverChannelCache)[T]).length === 1);
+  chats.applyEvent({ t: "channel_msg", target: T, uid: "ch555", text: "new ambient message", mid: "12", ts: 3 });
+  channel = chats.trackedChannels(get(chats.serverChannelCache)[T])[0];
+  check("a newer preview does not overwrite the queued reply state", channel.text === "new ambient message" && channel.state?.state === "writing");
+  chats.applyEvent({ t: "done", target: T, uid: "ch555" });
+  channel = chats.trackedChannels(get(chats.serverChannelCache)[T])[0];
+  check("answered active channels remain visible and return to listening", !!channel && !channel.state && statusOf(channel, { now: 4 }).phase === "idle");
+  chats.applyEvent({ t: "channel_msg", target: T, uid: "ch777", text: "inactive channel" });
+  check("a preview of an inactive channel does not enable tracking", chats.trackedChannels(get(chats.serverChannelCache)[T]).length === 1);
+  chats.applyEvent({ t: "active_channels", target: T, channels: [] });
+  check("deselected channels leave the tracked list immediately", chats.trackedChannels(get(chats.serverChannelCache)[T]).length === 0);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

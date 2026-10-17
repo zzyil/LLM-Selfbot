@@ -615,6 +615,7 @@ def create_bot() -> commands.Bot:
         "help_command": None,
         "member_cache_flags": discord.MemberCacheFlags.none(),
         "chunk_guilds_at_startup": False,
+        "guild_subscriptions": True,  # Gateway listening must not depend on the dashboard.
         "max_messages": _CACHE_CFG.get("max_messages", 200),
     }
     if ACCOUNT_TOKEN.get("proxy"):
@@ -689,6 +690,8 @@ _EMIT_EVENTS = _under_panel()
 
 
 def emit_chat_event(evt: dict):
+    if (panel := getattr(bot, "panel_server_access", None)) is not None:
+        panel.update(evt)
     if not _EMIT_EVENTS:
         return
     try:
@@ -2569,6 +2572,7 @@ async def _tg_ipc_loop():
                     _write_result(cmd_id, {
                         "users": users_out,
                         "channels": channels_out,
+                        "active_channels": _get_server_access().active_channels(),
                         # true when the DM sweep hit its cap, so the panel can say the list is the most recent N rather than all
                         "truncated": _truncated,
                         "paused": getattr(bot, "paused", False),
@@ -3402,6 +3406,7 @@ async def on_ready():
         sys.exit(1)
 
     bot.selfbot_id = bot.user.id
+    _get_server_access()  # Load saved active channels before the first panel visit or gateway message.
 
     # record who this account actually is, so the panel can show the real username and avatar instead of just "Discord #1"; written to a file rather than fetched over IPC, so it is still there for a stopped account
     try:
@@ -4962,6 +4967,7 @@ def _sync_channel_activity():
                 bot.message_queues.pop(key, None)
             clear_reply_state(message.author.id, channel_id=cid)
     emit_chat_meta()
+    emit_chat_event({"t": "active_channels", "channels": _get_server_access().active_channels()})
 
 
 def _get_server_chat():
@@ -5084,8 +5090,9 @@ async def _reply_in_server(message, history, directed):
 
 @bot.event
 async def on_message(message):
-    # Watching a channel in the owner UI is separate from choosing which chats the AI answers.
-    if getattr(message, "guild", None) is not None and (panel := getattr(bot, "panel_server_access", None)) is not None and panel.watches(message.channel.id):
+    # Persistent active channels stream without an open dashboard; temporary watches also cover previews.
+    if getattr(message, "guild", None) is not None and (panel := _get_server_access()).watches(message.channel.id):
+        panel.record(message, server_row(message))
         a = message.author
         emit_chat_event({"t": "channel_msg", "uid": f"ch{message.channel.id}",
                          "mine": a.id == bot.selfbot_id, "ts": message.created_at.timestamp(),

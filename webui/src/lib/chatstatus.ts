@@ -9,7 +9,7 @@
 import type { ChatUser } from "./chats";
 import { fmtDate, HOUR_MINUTE } from "./fmt";
 
-export type Phase = "live" | "needs" | "off";
+export type Phase = "live" | "needs" | "off" | "idle";
 export type Status = {
   phase: Phase;
   tone: "accent" | "good" | "warn" | "bad" | "muted";
@@ -32,6 +32,7 @@ export type StatusContext = {
   now: number;
   /** The whole account is paused. */
   paused?: boolean;
+  offline?: boolean;
   /** Rows a Reply to all tried and could not answer this run. */
   failed?: Set<string>;
 };
@@ -55,6 +56,10 @@ export function statusOf(u: ChatUser, ctx: StatusContext): Status {
   if (u.ignored) {
     return { phase: "off", tone: "muted", short: "Bot off", title: "The bot is off for them",
              detail: "It will not answer them until you turn it back on." };
+  }
+  if (ctx.offline) {
+    return { phase: "off", tone: "muted", short: "Account stopped", title: "The account is stopped",
+             detail: "Start it from Accounts to resume listening." };
   }
   if (ctx.paused) {
     return { phase: "needs", tone: "warn", short: "Account paused", title: "Held, the account is paused",
@@ -82,7 +87,7 @@ export function statusOf(u: ChatUser, ctx: StatusContext): Status {
                  detail: "Another reply is going out first." };
       case "sending":
         return { phase: "live", tone: "good", step: 4, short: "Typing…", title: "Typing it out",
-                 detail: "The typing indicator is up in their DM right now." };
+                 detail: u.kind === "server" ? "The typing indicator is up in the channel." : "The typing indicator is up in their DM right now." };
       case "skipped":
         return { phase: "needs", tone: "muted", short: "Won't answer", title: "It won't answer this on its own",
                  detail: s.reason ? `Because ${s.reason}.` : undefined };
@@ -98,6 +103,10 @@ export function statusOf(u: ChatUser, ctx: StatusContext): Status {
   if (u.reply_at && countdown(u.reply_at, now)) {
     return { phase: "live", tone: "accent", step: 1, short: `Replies in ${countdown(u.reply_at, now)}`,
              title: `Replies in ${countdown(u.reply_at, now)}`, detail: `Around ${clock(u.reply_at)}.`, eta: u.reply_at };
+  }
+  if (u.kind === "server" && u.active && !u.count) {
+    return { phase: "idle", tone: "muted", short: u.can_send === false ? "Listening · read only" : "Listening",
+             title: "Listening to this channel", detail: "No reply is queued. Listening continues when this page is closed." };
   }
   if (u.ts && now - u.ts > 3600) {
     return { phase: "needs", tone: "warn", short: "Came in while off", title: "Arrived while the bot was off",

@@ -27,7 +27,7 @@
   import { toast, motionEnabled } from "../lib/stores";
   import { resource } from "../lib/resource";
   import {
-    chatAccounts, chatCache, serverChannelCache, chatsFocus, loadChatAccounts, refreshChats, refreshServerChannels, isChannelConversation,
+    chatAccounts, chatCache, serverChannelCache, chatsFocus, loadChatAccounts, refreshChats, refreshServerChannels, isChannelConversation, trackedChannels,
     replying as replyingStore, replyingAll as replyingAllStore, sendReply, sendReplyAll, stopReplyAll,
     replyAllProgress, cancelReply, toggleIgnore, setIgnored, loadMessage, conversations, convKey, loadConversation,
     sendOwnMessage, typingNow, drafts, setDraft, loadDrafts, stagedFiles, loadEarlier, joinConversation,
@@ -114,10 +114,12 @@
 
   const accounts = $derived(mode === "servers" ? $chatAccounts.filter((a) => a.platform === "discord") : $chatAccounts);
   const channelEntry = $derived($serverChannelCache[target]);
+  const dmEntry = $derived($chatCache[target] ?? { users: [], fetched: 0, loading: false, error: "" });
   const entry = $derived(mode === "servers"
     ? { ...(channelEntry ?? { fetched: 0, loading: false, error: "" }), users: channelEntry?.channels ?? [] }
-    : $chatCache[target] ?? { users: [], fetched: 0, loading: false, error: "" });
-  const users = $derived(entry.users.filter((u) => mode === "servers" ? isChannelConversation(u) : !isChannelConversation(u)));
+    : { ...dmEntry, users: [...dmEntry.users.filter((u) => !isChannelConversation(u)), ...trackedChannels(channelEntry)] });
+  const users = $derived(entry.users);
+  const dmUsers = $derived(users.filter((u) => !isChannelConversation(u)));
   const loading = $derived(mode === "servers" ? false : !accounts.length || (!entry.fetched && entry.loading));
   const refreshing = $derived(entry.loading && entry.fetched > 0);
   const current = $derived(accounts.find((a) => a.id === target));
@@ -166,7 +168,8 @@
     }
   }
 
-  const refreshCurrent = (options = {}) => mode === "servers" ? refreshServerChannels(target, options) : refreshChats(target, options);
+  const refreshCurrent = (options = {}) => mode === "servers" ? refreshServerChannels(target, options)
+    : Promise.all([refreshChats(target, options), refreshServerChannels(target, options)]);
 
   async function loadFriends() {
     if (!target || mode === "servers") return;
@@ -228,7 +231,7 @@
     selectedId = "";
     older = null;
     loadFriends();
-    await (mode === "servers" ? refreshServerChannels(id, { maxAge: 10000 }) : refreshChats(id, { maxAge: 10000 }));
+    await refreshCurrent({ maxAge: 10000 });
   }
 
   // ── Times ──────────────────────────────────────────────────────────────
@@ -253,7 +256,8 @@
   // not go" rather than untouched. Cleared when the account changes.
   let failedReplies = $state<Set<string>>(new Set());
 
-  const statusOf = (u: ChatUser): Status => statusFor(u, { now, paused: entry.paused, failed: failedReplies });
+  const statusOf = (u: ChatUser): Status => statusFor(u, { now, paused: entry.paused, failed: failedReplies,
+    offline: u.kind === "server" && !!current?.state && current.state !== "running" });
   /** How far through its wait a countdown is, 0 to 1. */
   const progress = (st: Status): number => progressOf(st, now);
 
@@ -262,12 +266,14 @@
   // are under Ignored at the top, where they can be let back in.
   const sections = $derived.by(() => {
     const rows = users.filter((u) => !u.ignored).map((u) => ({ u, st: statusOf(u) }));
-    const by = (phase: Phase) => rows.filter((r) => r.st.phase === phase);
+    const by = (phase: Phase) => rows.filter((r) => r.u.kind !== "server" && r.st.phase === phase);
     const live = by("live").sort((a, b) => (a.st.eta || Infinity) - (b.st.eta || Infinity));
     const needs = by("needs").sort((a, b) => (a.u.ts || Infinity) - (b.u.ts || Infinity));
     return [
       { id: "live", title: "Being answered", tone: "accent", rows: live },
       { id: "needs", title: "Needs you", tone: "warn", rows: needs },
+      { id: "channels", title: "Active channels", tone: "muted", rows: rows.filter((r) => r.u.kind === "server")
+        .sort((a, b) => (b.u.ts || 0) - (a.u.ts || 0) || (a.u.where || "").localeCompare(b.u.where || "")) },
     ].filter((s) => s.rows.length);
   });
 
@@ -347,7 +353,7 @@
     }
     return soonest;
   });
-  const liveCount = $derived(sections.find((s) => s.id === "live")?.rows.length ?? 0);
+  const liveCount = $derived(users.filter((u) => statusOf(u).phase === "live").length);
 
   // ── Selection ──────────────────────────────────────────────────────────
   // Who is open on the right. Kept as a snapshot too: once they are answered
@@ -596,7 +602,8 @@
   const messages = $derived.by((): ConvMessage[] => {
     if (conv?.messages.length) return conv.messages;
     if (!selected || selected.archived) return [];
-    return [{ mine: false, ts: selected.ts || now, text: selected.text ?? selected.snippet,
+    if (!selected.mid && !selected.text && !selected.snippet) return [];
+    return [{ mine: !!selected.mine, author: selected.latest_author, ts: selected.ts || now, text: selected.text || selected.snippet,
               attachments: selected.attachments, stickers: selected.stickers, embeds: selected.embeds }];
   });
 
@@ -896,7 +903,7 @@
   }
 
   const shownSections = $derived(
-    sections.map((s) => ({ ...s, rows: s.rows.filter((r) => passes(r.u, s.id)) })).filter((s) => s.rows.length),
+    sections.map((s) => ({ ...s, rows: s.rows.filter((r) => passes(r.u, r.st.phase)) })).filter((s) => s.rows.length),
   );
   const shownArchived = $derived(
     archived.filter((c: Past) => {
@@ -914,8 +921,8 @@
     const list: { id: ListFilter; label: string; n: number }[] = [
       { id: "all", label: "All", n: 0 },
       { id: "unread", label: "Unread", n: live.filter((u) => u.count > 0).length },
-      { id: "needs", label: "Needs you", n: sections.find((s) => s.id === "needs")?.rows.length ?? 0 },
-      { id: "live", label: "Being answered", n: sections.find((s) => s.id === "live")?.rows.length ?? 0 },
+      { id: "needs", label: "Needs you", n: live.filter((u) => statusOf(u).phase === "needs").length },
+      { id: "live", label: "Being answered", n: live.filter((u) => statusOf(u).phase === "live").length },
       { id: "drafts", label: "Drafts", n: [...live.map((u) => u.id), ...archived.map((c: Past) => c.id)].filter(hasDraft).length },
       { id: "answered", label: "Answered", n: archived.length },
     ];
@@ -1156,6 +1163,14 @@
 
   /** Right-click on someone waiting: open them, answer now or not at all, or stop answering them. */
   function rowMenu(u: ChatUser): MenuEntry[] {
+    if (u.kind === "server") return [
+      { title: u.where || u.name },
+      { label: "Open", icon: "chats", run: () => select(u.id) },
+      { label: "Reply now", icon: "send", disabled: busy || u.can_send === false, run: () => reply(u) },
+      cancellable(u) && { label: "Don't reply", icon: "stop", run: () => cancel(u) },
+      { label: "Copy channel ID", icon: "copy", run: () => copyText(u.channel_id || u.id.slice(2), "Copied the channel ID.") },
+      { label: "Manage active channels", icon: "settings", run: () => { serversFocus.set(target); window.location.hash = "/servers"; } },
+    ];
     const who = personOf(u);
     return [
       { title: u.name },
@@ -1393,7 +1408,7 @@
 
   {#if mode !== "servers" && !loading && users.length}
     <div class="ch-stats">
-      <span class="ch-stat"><b>{users.filter((u) => !u.ignored).length}</b> waiting</span>
+      <span class="ch-stat"><b>{dmUsers.filter((u) => !u.ignored).length}</b> waiting</span>
       {#if unread}<span class="ch-stat"><b>{unread}</b> unread</span>{/if}
       {#if nextReply}<span class="ch-stat is-accent"><b>{countdown(nextReply)}</b> to the next reply</span>{/if}
       {#if liveCount}<span class="ch-stat is-live"><i></i><b>{liveCount}</b> being answered</span>{/if}
@@ -1441,7 +1456,7 @@
       <i class:is-busy={refreshing}></i>{refreshing ? "Checking" : "Live"}
     </span>
     {#if mode !== "servers"}<Button kind={replyingAll ? "ghost" : "good"} onclick={replyAll}
-            disabled={(!replyingAll && users.length === 0) || !!allProgress?.stopping} loading={!!allProgress?.stopping}>
+            disabled={(!replyingAll && dmUsers.length === 0) || !!allProgress?.stopping} loading={!!allProgress?.stopping}>
       {#if allProgress?.stopping}
         Stopping
       {:else if replyingAll && allProgress}
@@ -1632,7 +1647,7 @@
               <span class="ch-item-top">
                 <span class="ch-name">{u.name}</span>
                 {#if u.kind === "server" && u.where}<span class="ch-where" title={u.where}>{u.where}</span>{/if}
-                <span class="ch-time">{ago(u.ts)}</span>
+                <span class="ch-time">{u.kind === "server" && !u.ts ? "" : ago(u.ts)}</span>
               </span>
               <span class="ch-preview">
                 {#if $typingNow[convKey(target, u.id)]}
@@ -1643,7 +1658,7 @@
                   <span class="ch-draft">Draft:</span><span class="ch-draft-text">{draftOf(u.id)}</span>
                 {:else}
                   {#if hasMedia(u)}<span class="ch-preview-icon"><Icon name="pictures" size={11} /></span>{/if}
-                  {preview(u)}
+                  {u.kind === "server" && u.latest_author ? `${u.mine ? "You" : u.latest_author.name}: ` : ""}{u.kind === "server" && !u.mid ? "Open channel history" : preview(u)}
                 {/if}
               </span>
               <span class="ch-state" data-tone={s.tone}>
@@ -1659,10 +1674,10 @@
           </button>
           <!-- Stop answering them, and stop trying, until they are let back in.
                On every row: it used to be only where a reply had failed. -->
-          <button class="ch-x" onclick={(e) => ignorePerson(personOf(u), e)} disabled={!!ignoreBusy[personOf(u).id]}
+          {#if u.kind !== "server"}<button class="ch-x" onclick={(e) => ignorePerson(personOf(u), e)} disabled={!!ignoreBusy[personOf(u).id]}
                   title="Ignore {u.name}: the bot stops answering them until you unignore them" aria-label="Ignore {u.name}">
             <Icon name="close" size={11} />
-          </button>
+          </button>{/if}
           </div>
         {/each}
       {/each}
@@ -1746,12 +1761,12 @@
           </span>
           <div class="min-w-0 flex-1">
             <div class="flex min-w-0 items-center gap-2">
-              {#if mode === "servers"}<b class="text-[14px] font-semibold">{selected.where || selected.name}</b>{:else}<UserChip id={selected.id} name={selected.name} size="md" />{/if}
+              {#if selected.kind === "server"}<b class="text-[14px] font-semibold">{selected.where || selected.name}</b>{:else}<UserChip id={selected.id} name={selected.name} size="md" />{/if}
               {#if selected.count > 1 && !answered}<span class="cd-unread">{selected.count} unread</span>{/if}
             </div>
             <div class="truncate text-[11.5px] text-faint">
               {#if selected.username && selected.username !== selected.name}<span class="selectable">@{selected.username}</span> · {/if}
-              {mode !== "servers" && selected.kind === "server" && selected.where ? `${selected.where} · ` : ""}{selected.archived ? (mode === "servers" ? "server channel" : "answered") : `last message ${ago(selected.ts) === "now" ? "just now" : `${ago(selected.ts)} ago`}`}
+              {mode !== "servers" && selected.kind === "server" && selected.where ? `${selected.where} · ` : ""}{selected.archived ? (mode === "servers" ? "server channel" : "answered") : selected.kind === "server" && !selected.ts ? "server channel" : `last message ${ago(selected.ts) === "now" ? "just now" : `${ago(selected.ts)} ago`}`}
               {#if selected.ts} · {at(selected.ts)}{/if}
             </div>
           </div>
@@ -1781,7 +1796,7 @@
               </button>
             </div>
           {/if}
-          {#if mode !== "servers" && !selected.archived && (selected.kind !== "server" || selected.author_id)}
+          {#if mode !== "servers" && !selected.archived && selected.kind !== "server"}
             <button class="cd-toggle" class:is-off={selected.ignored} onclick={() => flipIgnore(selected!)}
                     disabled={!!rowBusy[selected.id]}
                     title={selected.ignored ? "Let the bot answer them again" : "Stop the bot answering this person at all"}>
@@ -1960,9 +1975,9 @@
         {/if}
         </div>
 
-        {#if !selected.archived && !answered}
+        {#if !selected.archived && !answered && st?.phase !== "idle"}
           <footer class="cd-actions">
-            <Button onclick={() => reply(selected!)} loading={!!replying[selected.id]} disabled={busy}>
+            <Button onclick={() => reply(selected!)} loading={!!replying[selected.id]} disabled={busy || selected.can_send === false}>
               {#if !replying[selected.id]}<Icon name="chats" size={14} />{/if}{replying[selected.id] ? "Replying" : "Reply now"}
             </Button>
             {#if (cancellable(selected) || replying[selected.id]) && !selected.ignored}

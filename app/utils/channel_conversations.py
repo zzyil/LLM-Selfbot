@@ -21,6 +21,33 @@ def channel_row(row):
             "avatar": "", "username": "", "latest_author": author}
 
 
+def apply_active_event(rows, event):
+    """Track activity without turning ambient channel messages into pending replies."""
+    if event.get("t") == "active_channels":
+        return [channel_row(row) for row in event.get("channels", []) if is_channel(row)]
+    uid = str(event.get("uid", ""))
+    out = []
+    for row in rows:
+        if row.get("id") != uid:
+            out.append(row)
+            continue
+        if event.get("t") == "channel_msg":
+            fields = ("text", "mid", "attachments", "stickers", "embeds", "reactions", "author")
+            fresh = {key: event.get(key, [] if key in fields[2:6] else "") for key in fields}
+            fresh.update(ts=event.get("ts", 0), snippet=event.get("text", ""),
+                         latest_author=event.get("author"), mine=bool(event.get("mine")))
+            out.append({**row, **fresh})
+        elif event.get("t") == "reactions" and row.get("mid") == event.get("mid"):
+            out.append({**row, "reactions": event.get("reactions", [])})
+        elif event.get("t") == "edited" and row.get("mid") == event.get("mid"):
+            out.append({**row, "text": event.get("text", ""), "snippet": event.get("text", "")})
+        elif event.get("t") == "deleted" and row.get("mid") == event.get("mid"):
+            out.append({**row, "text": "", "snippet": "Message deleted", "attachments": [], "embeds": [], "stickers": [], "reactions": []})
+        else:
+            out.append(row)
+    return out
+
+
 def separate(people, channels=()):
     contacts, by_channel = [], {}
     for row in [*people, *channels]:

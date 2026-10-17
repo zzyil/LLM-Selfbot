@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from app.core import ipc
 from app.utils.paths import DATA_DIR
-from app.utils.channel_conversations import channel_row, is_channel, separate
+from app.utils.channel_conversations import apply_active_event, channel_row, is_channel, separate
 # connect_raw() instead of a bare sqlite3.connect(): a plain connection sets no busy_timeout, so these queries failed with "database is locked" rather than waiting whenever a bot runner happened to be writing.
 from app.utils.db import connect_raw
 
@@ -102,7 +102,8 @@ def apply_event(body: dict, evt: dict) -> dict:
     contacts, channels = separate(body.get("users") or [], body.get("channels") or [])
     field = "channels" if is_channel(evt) else "users"
     users = channels if field == "channels" else contacts
-    out = {**body, "users": contacts, "channels": channels}
+    out = {**body, "users": contacts, "channels": channels,
+           "active_channels": apply_active_event(body.get("active_channels", []), evt)}
     if kind == "meta":
         out["paused"] = bool(evt.get("paused"))
         out["cooldown_until"] = evt.get("cooldown_until") or 0
@@ -148,7 +149,7 @@ def apply_event(body: dict, evt: dict) -> dict:
                           # a server conversation says where it is and who wrote
                           **{k: evt[k] for k in _ROW_EXTRA if k in evt}})
     else:
-        return body
+        return out
     out[field] = [channel_row(row) for row in users] if field == "channels" else users
     return out
 
@@ -206,6 +207,7 @@ async def _chats_payload(tgt, fresh: bool = False) -> dict:
         body = {
             "users": users,
             "channels": channels,
+            "active_channels": [channel_row(row) for row in result.get("active_channels", []) if is_channel(row)],
             "target": tgt,
             "truncated": bool(result.get("truncated")),
             "paused": result.get("paused", False),

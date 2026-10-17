@@ -256,7 +256,8 @@ class RunnerBoundaries(unittest.IsolatedAsyncioTestCase):
                  and node.name in {"on_message", "generate_response_and_reply"}]
         for node in nodes:
             node.decorator_list = []
-        scope = {"_server_channel_active": lambda m, **kw: False, "bot": N()}
+        scope = {"_server_channel_active": lambda m, **kw: False, "bot": N(),
+                 "_get_server_access": lambda: N(watches=lambda cid: False)}
         exec(compile(ast.Module(body=nodes, type_ignores=[]), "inactive_channel", "exec"), scope)  # noqa: S102
         message = N(guild=N(id=100), channel=N(id=200))
         await scope["on_message"](message)
@@ -268,7 +269,8 @@ class RunnerBoundaries(unittest.IsolatedAsyncioTestCase):
         node = next(node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef) and node.name == "_send_chunk")
         message = N(channel=N(id=200, send=AsyncMock()), guild=N(id=100), author=N(id=7), reply=AsyncMock())
         scope = {"_server_channel_active": lambda m, **kw: False, "message": message,
-                 "asyncio": asyncio, "chunk": "must not send", "set_reply_state": lambda *args, **kw: None}
+                 "asyncio": asyncio, "chunk": "must not send", "set_reply_state": lambda *args, **kw: None,
+                 "i": 0, "delivery": N(verify=lambda index, chunk: None)}
         exec(compile(ast.Module(body=[node], type_ignores=[]), "revoked_send", "exec"), scope)  # noqa: S102
         with self.assertRaises(asyncio.CancelledError):
             await scope["_send_chunk"]()

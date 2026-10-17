@@ -44,6 +44,9 @@ export type ChatUser = {
    * `author_id` who is asking in it, `where` "#channel · Server".
    */
   kind?: "server";
+  active?: boolean;
+  mine?: boolean;
+  origin?: "selected" | "discovered" | "inactive";
   can_send?: boolean;
   channel_reason?: string;
   channel_name?: string;
@@ -56,6 +59,7 @@ export type ChatUser = {
   /** Their latest message in full, and what came with it. */
   text?: string;
   mid?: string;
+  reactions?: { name: string; url?: string; count: number; mine?: boolean }[];
   attachments?: { url: string; name: string; type?: string; w?: number | null; h?: number | null; size?: number }[];
   /** A Lottie sticker (`format` "lottie") has no url; the panel plays it from its id. */
   stickers?: { name: string; url?: string; id?: string; format?: string }[];
@@ -95,7 +99,7 @@ const EMPTY: ChatEntry = { users: [], fetched: 0, loading: false, error: "" };
 export const chatCache = writable<Record<string, ChatEntry>>({});
 export const chatAccounts = writable<ChatAccount[]>([]);
 export type ChannelConversation = ChatUser & { kind: "server"; channel_id: string; channel_name: string; guild_id: string; guild_name: string };
-export type ChannelEntry = Omit<ChatEntry, "users"> & { channels: ChannelConversation[] };
+export type ChannelEntry = Omit<ChatEntry, "users"> & { channels: ChannelConversation[]; activeChannels?: ChannelConversation[] };
 export const serverChannelCache = writable<Record<string, ChannelEntry>>({});
 const EMPTY_CHANNELS: ChannelEntry = { channels: [], fetched: 0, loading: false, error: "" };
 const channelInflight = new Map<string, Promise<void>>();
@@ -109,6 +113,38 @@ export function asChannelConversation(row: ChatUser): ChannelConversation {
            guild_id: String(row.guild_id || ""), guild_name: guild, name: `#${name}`,
            avatar: "", username: "", where: `#${name}${guild ? ` · ${guild}` : ""}` };
 }
+/** Active channels stay visible after a reply; pending state remains a separate queue. */
+export function trackedChannels(entry?: ChannelEntry): ChannelConversation[] {
+  const rows = new Map((entry?.activeChannels ?? []).map((row) => [row.id, row]));
+  for (const pending of entry?.channels ?? []) {
+    const active = rows.get(pending.id);
+    const merged = { ...active, ...pending, mine: false, ignored: false };
+    if (active && (active.ts || 0) > (pending.ts || 0))
+      for (const key of ["text", "mid", "attachments", "stickers", "embeds", "reactions", "author", "ts", "snippet", "latest_author", "mine"])
+        (merged as any)[key] = (active as any)[key];
+    rows.set(pending.id, merged);
+  }
+  return [...rows.values()];
+}
+
+export function applyActiveEvent(rows: ChannelConversation[], evt: ChatEvent): ChannelConversation[] {
+  if (evt.t === "active_channels") return (evt.channels ?? []).filter(isChannelConversation).map(asChannelConversation);
+  return rows.map((row) => {
+    if (row.id !== evt.uid) return row;
+    if (evt.t === "channel_msg") {
+      const fresh: any = { ts: evt.ts || 0, snippet: evt.text || "", latest_author: evt.author, mine: !!evt.mine };
+      for (const key of ["text", "mid", "attachments", "stickers", "embeds", "reactions", "author"])
+        fresh[key] = evt[key] ?? (["attachments", "stickers", "embeds", "reactions"].includes(key) ? [] : "");
+      return { ...row, ...fresh };
+    }
+    if (evt.t === "reactions" && row.mid === evt.mid) return { ...row, reactions: evt.reactions || [] };
+    if (evt.t === "edited" && row.mid === evt.mid) return { ...row, text: evt.text || "", snippet: evt.text || "" };
+    if (evt.t === "deleted" && row.mid === evt.mid)
+      return { ...row, text: "", snippet: "Message deleted", attachments: [], embeds: [], stickers: [], reactions: [] };
+    return row;
+  });
+}
+
 function patchChannels(target: string, changes: Partial<ChannelEntry>) {
   serverChannelCache.update((c) => ({ ...c, [target]: { ...(c[target] ?? EMPTY_CHANNELS), ...changes } }));
 }
@@ -125,8 +161,12 @@ export function refreshServerChannels(target: string, { force = false, maxAge = 
     try {
       const data = await api.serverPending(target, force);
       let channels: ChatUser[] = (data.channels || []).filter(isChannelConversation);
-      for (const r of recent.get(target) ?? []) if (r.at >= started) channels = applyToUsers(channels, r.evt).filter(isChannelConversation);
-      patchChannels(target, { channels: channels.map(asChannelConversation), fetched: Date.now(), loading: false, error: "",
+      let activeChannels = (data.active_channels || []).filter(isChannelConversation).map(asChannelConversation);
+      for (const r of recent.get(target) ?? []) if (r.at >= started) {
+        channels = applyToUsers(channels, r.evt).filter(isChannelConversation);
+        activeChannels = applyActiveEvent(activeChannels, r.evt);
+      }
+      patchChannels(target, { channels: channels.map(asChannelConversation), activeChannels, fetched: Date.now(), loading: false, error: "",
                              paused: !!data.paused, cooldownUntil: data.cooldown_until || 0, cooldownRange: data.cooldown_range ?? null });
     } catch (e: any) {
       patchChannels(target, { loading: false, error: e?.message || "Could not read channel replies" });
@@ -860,12 +900,12 @@ export function applyEvent(evt: ChatEvent) {
   const channelState = get(serverChannelCache)[target];
   if (channelState?.fetched) {
     if (evt.t === "meta") patchChannels(target, { paused: !!evt.paused, cooldownUntil: evt.cooldown_until || 0 });
-    else if (serverEvent || evt.t === "ignored") {
+    else if (serverEvent || evt.t === "ignored" || evt.t === "active_channels") {
       const channels = applyToUsers(channelState.channels, evt).filter(isChannelConversation).map(asChannelConversation);
-      patchChannels(target, { channels });
+      patchChannels(target, { channels, activeChannels: applyActiveEvent(channelState.activeChannels ?? [], evt) });
     }
   }
-  if (serverEvent) return;
+  if (serverEvent || evt.t === "active_channels") return;
   const current = get(chatCache)[target];
   // Never fetched: nothing to patch, and the first fetch brings it all anyway.
   if (!current || !current.fetched) return;
