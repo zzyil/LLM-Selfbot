@@ -4973,7 +4973,8 @@ def _get_server_chat():
             consider_followup=lambda m, h: consider_followup(m, h, self_id=bot.selfbot_id,
                 names=(companion_memory.settings().get("server") or {}).get("names", [])),
             finished=_finish_server_reply, observed=_record_member_context,
-            is_active=lambda m: bool(getattr(bot, "active_chat", None) and bot.active_chat.active(m)),
+            is_active=lambda m: bool(getattr(bot, "active_chat", None)
+                                   and bot.active_chat.followup(m, bot.selfbot_id)),
             report=lambda exc: log_error("Server companion", type(exc).__name__))
         bot.server_companion = _server_chat
     return _server_chat

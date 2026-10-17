@@ -1,11 +1,13 @@
 """Active conversations retain availability without bypassing owner/spam controls."""
 import ast
+import asyncio
 import os
 import random
 import sys
 import tempfile
 import types
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -17,6 +19,7 @@ os.environ["LLMSELFBOT_DATA_DIR"] = SANDBOX.name
 (Path(SANDBOX.name) / "config/config.yaml").write_bytes((ROOT / "resources/config.yaml").read_bytes())
 
 from app.utils import conversation, db, engagement
+from app.utils.server_chat import ServerChat
 
 db.init_db()
 
@@ -74,6 +77,80 @@ class Availability(unittest.IsolatedAsyncioTestCase):
             self.now += 10
         restarted = engagement.ActiveChat("discord:1", clock=lambda: self.now)
         self.assertLess(self.now-max(restarted.recent.values()), 70)
+
+    def restarted_server(self, decision=True):
+        active = engagement.ActiveChat('discord:1', clock=lambda: self.now)
+        reply = AsyncMock(return_value='reply')
+        judge = AsyncMock(return_value=decision)
+        chat = ServerChat(self_id=lambda: 99,
+            get_config=lambda: {'names': ['G'], 'batch_wait_seconds': 0, 'reply_cooldown_seconds': 0,
+                               'learn_from_chat': False},
+            respond=reply, learn=AsyncMock(),
+            seed=AsyncMock(return_value=[{'role': 'assistant', 'content': 'okay, i mixed that up'}]),
+            can_reply=lambda m: True, clock=lambda: self.now, wall_clock=lambda: self.now,
+            is_active=lambda m: active.followup(m, 99), consider_followup=judge)
+        self.addAsyncCleanup(chat.close)
+        return chat, reply, judge
+
+    def server_message(self, **kwargs):
+        m = message(**kwargs)
+        m.id, m.content = 1, 'stupid ahh mf'
+        m.author.name = m.author.display_name = 'Member'
+        m.guild = types.SimpleNamespace(id=1)
+        m.reference, m.mentions = None, []
+        m.created_at = datetime.fromtimestamp(self.now, timezone.utc)
+        return m
+
+    async def test_server_followup_resumes_after_restart_within_the_saved_two_hour_window(self):
+        self.active.touch(message())
+        self.now += 49 * 60
+        chat, reply, judge = self.restarted_server()
+        chat.receive(self.server_message())
+        await asyncio.gather(*chat.reply_tasks)
+        judge.assert_awaited_once()
+        reply.assert_awaited_once()
+        history = reply.await_args.args[1]
+        self.assertIn('i mixed that up', history[0]['content'])
+        self.assertIn('Member [user 10]: stupid ahh mf', history[-1]['content'])
+
+    async def test_resumed_activity_does_not_bypass_the_target_check(self):
+        self.active.touch(message())
+        self.now += 49 * 60
+        chat, reply, judge = self.restarted_server(False)
+        chat.receive(self.server_message())
+        await asyncio.gather(*chat.reply_tasks)
+        judge.assert_awaited_once()
+        reply.assert_not_awaited()
+
+    async def test_restart_does_not_restore_other_members_channels_or_expired_activity(self):
+        self.active.touch(message())
+        self.now += 49 * 60
+        for incoming in (self.server_message(uid=11), self.server_message(channel=200)):
+            chat, reply, judge = self.restarted_server()
+            chat.receive(incoming)
+            await asyncio.gather(*chat.reply_tasks)
+            judge.assert_not_awaited()
+            reply.assert_not_awaited()
+        self.now += 2 * 3600
+        chat, reply, judge = self.restarted_server()
+        chat.receive(self.server_message())
+        await asyncio.gather(*chat.reply_tasks)
+        judge.assert_not_awaited()
+        reply.assert_not_awaited()
+
+    async def test_restart_still_ignores_acknowledgements_and_messages_to_other_members(self):
+        self.active.touch(message())
+        self.now += 49 * 60
+        acknowledgement, other_call, other_reply = (self.server_message() for _ in range(3))
+        acknowledgement.content = 'lmao'
+        other_call.mentions = [types.SimpleNamespace(id=11)]
+        other_reply.reference = types.SimpleNamespace(resolved=message(uid=11))
+        for incoming in (acknowledgement, other_call, other_reply):
+            chat, reply, judge = self.restarted_server()
+            chat.receive(incoming)
+            await asyncio.gather(*chat.reply_tasks)
+            judge.assert_not_awaited()
+            reply.assert_not_awaited()
 
     def test_disabled_mode_retains_existing_timing(self):
         self.active.touch(message())

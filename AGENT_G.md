@@ -408,7 +408,10 @@ use one referenced post and at most eight seconds of simulated typing.
 
 Every server turn includes a stable speaker ID, and the selected message stays
 last in model input even if the snapshot ends with another member or an old
-character answer. Threads have the same public-channel boundaries. Shared
+character answer. Threads have the same public-channel boundaries. After a restart, the persisted
+two-hour activity window can restore a follow-up candidate for the last engaged
+member; the current attributed channel transcript still decides whether it targets
+the character. Shared
 relationships and remembered facts remain background knowledge; they don't
 establish an unfinished DM conversation to continue publicly. Social assessment
 uses current-message evidence rather than inheriting a mistaken age argument

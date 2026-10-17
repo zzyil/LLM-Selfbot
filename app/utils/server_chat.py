@@ -287,6 +287,11 @@ class ServerChat:
                 and (self.clock()-state.last_reply < followup_seconds or engaged) \
                 and (state.followups < 2 or engaged):
             return "followup"
+        # The accepted activity window survives a restart; volatile channel flags do not.
+        # Restore only a candidate, so the attributed transcript still decides who it targets.
+        if not talking_elsewhere and state.last_author is None and self.is_active(message) \
+                and self.consider_followup is not None:
+            return "candidate"
         if not talking_elsewhere and _greeting(message) and self._greeting_ready(message, state, config):
             return "greeting"
         ongoing = state.directed_session and self.clock()-state.last_reply < followup_seconds
