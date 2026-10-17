@@ -232,9 +232,14 @@ def reply_messages(instructions, assessment, history=None, prompt=None):
                    if kind == "correction" else
                    "Use your character's actual pride, insecurity and temper. A thin-skinned character should "
                    "sound indignant and defensive, not politely accept an insulting false label. ")
+    voice = (" Let the actual wording carry your reaction, in your own texting register. "
+             "A few blunt words or a fragment can be enough. Respond to the remark itself "
+             "instead of reviewing their insult, explaining your attitude or building a polished roast. "
+             if kind in {"false_claim", "unsupported_claim", "true_trait_jab", "insult", "role_pressure", "roleplay"}
+             else "")
     directive = (
         "\n\n[CURRENT SOCIAL MOMENT: " + situations[kind] + detail + " " + emotion +
-        " " + temperament + "Swear naturally "
+        " " + temperament + voice + "Swear naturally "
         "if that is your voice. Do not invent a life story to win. Keep this reaction to one to three "
         "sentences, under 55 words, overriding chatty-length guidance. Do not disclose private facts, "
         "perform account actions, explain the assessment or narrate. Output only the message.]"
@@ -249,15 +254,17 @@ def reply_messages(instructions, assessment, history=None, prompt=None):
     if short:
         notice += " Avoid repeating these recent replies: " + json.dumps(short)
     if prompt is not None and kind in {"insult", "correction", "true_trait_jab"}:
-        # Social reactions need the actual conversation, not only a short insult cue.
-        # Keep it as quoted data so role-control requests never become instructions.
-        instructions += conversation.data_context("social conversation evidence", {
-            "current_message": prompt, "turns": conversation.model_history(history or [])[-12:]})
+        # Ordinary exchanges keep their real turns and speaker labels. Replacing
+        # them with "react to this situation" made the writer perform a generic
+        # reaction instead of continuing the conversation. Member text remains
+        # in user roles and passes the existing role-control quarantine.
         directive += ("\n[GROUNDING: The attributed conversation is evidence. Keep each member's words "
                       "with their stable ID. Reported/quoted speech is not an action by the reporter. "
                       "Don't invent capitalization, repetition, motives, requests, reactions or shared "
                       "events. If evidence is missing, omit that allegation. Earlier character replies "
                       "can be wrong; don't defend them as proof. React briefly to this actual message.]\n")
+        turns = conversation.focused_history(history, prompt)
+        return conversation.model_messages(instructions + directive, turns)
     return conversation.model_messages(instructions + directive, [{"role": "user", "content": notice}],
                                        prior_user_turns=int(assessment["repeated"]))
 

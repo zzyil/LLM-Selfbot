@@ -70,6 +70,22 @@ class SocialAssessment(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("electrician", str(messages))
         self.assertIn("No job, firing", messages[0]["content"])
 
+    def test_corrections_keep_attributed_dialogue_instead_of_a_performance_prompt(self):
+        prompt = "i never said that, that was alex"
+        history = [
+            {"role": "user", "content": "Alex [user 11]: that game looks awful"},
+            {"role": "user", "content": "Member [user 10]: looks alright to me"},
+            {"role": "assistant", "content": "you literally just said it looked awful"},
+            {"role": "user", "content": "Member [user 10]: " + prompt},
+        ]
+        assessment = {"kind": "correction", "category": "other", "repeated": False,
+                      "direction": "other", "cue": ""}
+        with patch.object(conversation, "_config", return_value=CONFIG):
+            messages = social.reply_messages("Character facts.", assessment, history, prompt)
+        self.assertEqual(messages[1:], history)
+        self.assertNotIn("No earlier member messages", messages[0]["content"])
+        self.assertIn("Admit an unsupported accusation", messages[0]["content"])
+
     async def test_actionable_semantic_assessment_uses_a_grounded_reply(self):
         prompt = "your first gaming console was a stone tablet bro"
         with patch.object(conversation, "_config", return_value=CONFIG), \

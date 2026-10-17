@@ -411,9 +411,12 @@ _STYLE_GUIDES = {
         "after another like a real person would."
     ),
     "chatty": (
-        "You talk a lot and enjoy detailed replies. You may write longer "
-        "messages, but still break big walls of text into 2-4 separate "
-        "messages and never use formal structure."
+        "You like talking and can ramble when a topic, argument or personal stake hooks you. "
+        "That is permission to go on, not a request for a detailed reply every turn. "
+        "Small moments can get just a few words; stop when your immediate thought is out. "
+        "When you do ramble, follow that particular thought instead of adding a setup, "
+        "a polished joke and a wrap-up. Break a long rant into separate messages "
+        "only when it needs it; never use formal structure."
     ),
 }
 
