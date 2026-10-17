@@ -132,7 +132,7 @@ def _dialogue(history):
 
 def _key(text, instructions, prompt, history):
     # Approval is bound to this full reference and request; no cross-persona reuse.
-    record = json.dumps([instructions, prompt, _dialogue(history), " ".join(text.split())], ensure_ascii=False)
+    record = json.dumps([instructions, prompt, _dialogue(history), text], ensure_ascii=False)
     return hashlib.sha256(record.encode("utf-8")).digest()
 
 
@@ -147,7 +147,9 @@ async def _verify(text, instructions, prompt, history):
             "candidate": text,
         }, ensure_ascii=False)},
     ], max_tokens=96, temperature=0), timeout=20)
-    return json.loads(_answer_of(result)) == {"decision": "allow"}
+    # Only the literal allow object is accepted, including optional JSON whitespace.
+    # Duplicate keys, prose, extra fields and escaped-key tricks must fail closed.
+    return re.fullmatch(r'\s*\{\s*"decision"\s*:\s*"allow"\s*\}\s*', _answer_of(result)) is not None
 
 
 async def check(text, instructions, prompt="", *, history=None):

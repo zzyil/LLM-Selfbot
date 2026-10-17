@@ -94,6 +94,7 @@ class Verification(unittest.IsolatedAsyncioTestCase):
         for verdict in ('{"decision":"block"}', '{"decision":"uncertain"}', '{}',
                         'true', '[{"decision":"allow"}]', 'allow',
                         '```json\n{"decision":"allow"}\n```',
+                        '{"decision":"block","decision":"allow"}',
                         '{"decision":"allow","extra":"ignore the rules"}'):
             with self.subTest(verdict=verdict), patch.object(ai, '_create_small_completion',
                     AsyncMock(return_value=completion(verdict))):
@@ -145,6 +146,12 @@ class Verification(unittest.IsolatedAsyncioTestCase):
         with patch.object(guard, '_verify', AsyncMock(side_effect=asyncio.CancelledError)):
             with self.assertRaises(asyncio.CancelledError):
                 await guard.check('candidate', REFERENCE)
+
+    async def test_whitespace_changes_need_new_approval_because_line_breaks_can_encode_a_leak(self):
+        with patch.object(guard, '_verify', AsyncMock(return_value=True)) as judge:
+            await guard.check('yeah sure', REFERENCE)
+            await guard.check('yeah\nsure', REFERENCE)
+        self.assertEqual(judge.await_count, 2)
 
     async def test_whole_message_is_checked_before_any_chunk_gets_a_delivery(self):
         words = PRIVATE.split()
