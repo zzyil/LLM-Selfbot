@@ -91,6 +91,9 @@ bot:
       names: ["G"]
       history_messages: 40
       reply_to_name: true
+      reply_to_greetings: true  # standalone greetings can start a quiet channel conversation
+      greeting_quiet_seconds: 180
+      greeting_cooldown_seconds: 300
       followup_seconds: 45
       ambient_reply_probability: 0.0
       ambient_min_messages: 8

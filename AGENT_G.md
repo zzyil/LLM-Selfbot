@@ -383,18 +383,30 @@ IDs so members with the same display name remain distinct. Threads have separate
 conversation history while the character's relationships remain shared everywhere.
 
 It answers direct mentions, replies to its messages, and its configured name.
+Standalone greetings such as `yo`, `hi?` and `hey everyone` can also start a
+conversation in an active channel, even with only one member talking. By default,
+no other member may have been observed speaking in the last three minutes, and greeting openers
+have a five-minute cooldown after the character's last reply attempt or self-post.
+Greetings directed at someone else and quoted greetings don't qualify. A greeting
+is rechecked after the collection window so it doesn't interrupt a new exchange.
+This path doesn't require the group activity threshold or an extra model decision.
 After a delivered reply, the same member can continue without another mention
 for 45 seconds, up to two follow-ups. A reply or mention aimed at someone else
 doesn't count as a follow-up. One queue per channel combines bursts from multiple
 members into a single response, with a three-second collection window and a
 20-second cooldown between inference attempts. Stale requests expire after two
-minutes. Dashboard Reply and Cancel work with this queue.
+minutes. A direct or greeting-started conversation uses the longer configured
+active-conversation window while that member keeps talking. Dashboard Reply and
+Cancel work with this queue.
 
 Customize these under `bot.companion.server` in `config/config.yaml`:
 
 ```yaml
 names: ["G", "Agent G"]
 reply_to_name: true
+reply_to_greetings: true
+greeting_quiet_seconds: 180
+greeting_cooldown_seconds: 300
 followup_seconds: 45
 ambient_reply_probability: 0.0
 batch_wait_seconds: 3

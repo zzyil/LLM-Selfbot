@@ -23,6 +23,15 @@ def _text(message):
     return (message.content or "").strip()[:2000]
 
 
+def _greeting(message):
+    """Recognize a standalone channel greeting, not a task or a named-person greeting."""
+    text = " ".join(_text(message).casefold().replace("’", "'").split())
+    return re.fullmatch(
+        r"(?:hi+|hey+|hello+|yo+|sup|wassup|what'?s up)"
+        r"(?:[,\s]+(?:all|everyone|everybody|guys|chat|folks))?[.!?,\s]*", text
+    ) is not None
+
+
 def _turn(message, self_id):
     if message.author.id == self_id:
         return {"role": "assistant", "content": _text(message) or "[attachment]"}
@@ -183,6 +192,16 @@ class ServerChat:
                 and now-max(state.last_ambient_attempt, state.last_reply) >= cooldown
                 and now-self.last_ambient_attempt >= global_cooldown)
 
+    def _greeting_ready(self, message, state, config):
+        if not config.get("reply_to_greetings", True) or state.pending is not None or state.current is not None:
+            return False
+        now = self.clock()
+        quiet = _number(config, "greeting_quiet_seconds", 180, 30, 3600)
+        cooldown = _number(config, "greeting_cooldown_seconds", 300, 30, 3600)
+        return (now-max(state.last_attempt, state.last_reply) >= cooldown
+                and not any(now-at <= quiet and author != message.author.id
+                            for at, _, author in state.observed))
+
     def _reason(self, message, state, directed, config):
         if directed:
             return "direct"
@@ -214,6 +233,8 @@ class ServerChat:
                 and (self.clock()-state.last_reply < followup_seconds or engaged) \
                 and (state.followups < 2 or engaged):
             return "followup"
+        if not talking_elsewhere and _greeting(message) and self._greeting_ready(message, state, config):
+            return "greeting"
         chance = _number(config, "ambient_reply_probability", 0, 0, 1)
         if not talking_elsewhere and state.pending is not None and state.pending[1] == "ambient":
             return "ambient"
@@ -235,7 +256,7 @@ class ServerChat:
         config = self.get_config()
         reason = self._reason(message, state, directed, config)
         if config.get("learn_from_chat", True) and _text(message):
-            self._queue_learning(message, state, force=reason in {"direct", "followup"})
+            self._queue_learning(message, state, force=reason in {"direct", "greeting", "followup"})
         if reason is None or not self.can_reply(message):
             return True
         # One pending response for the whole channel, even when several members address it.
@@ -274,6 +295,11 @@ class ServerChat:
                         if self.ambient_seconds_left(message) <= 0:
                             detail = "reply opportunity expired"
                             continue
+                        # Another member may have started talking during the batch wait.
+                        # The latest turn can be the greeter's follow-up, so don't re-match its text.
+                        if reason == "greeting" and not self._greeting_ready(message, state, config):
+                            detail = "channel greeting no longer eligible"
+                            continue
                         state.last_attempt = self.clock()
                         state.current = message
                         state.current_reason = reason
@@ -302,7 +328,7 @@ class ServerChat:
                             state.last_author = message.author.id
                             state.followups = state.followups+1 if reason == "followup" else 0
                             if reason != "followup":
-                                state.directed_session = reason == "direct"
+                                state.directed_session = reason in {"direct", "greeting"}
                     except asyncio.CancelledError:
                         outcome, detail = "cancelled", "reply cancelled or opportunity expired"
                         raise
