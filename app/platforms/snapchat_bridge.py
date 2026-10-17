@@ -1443,7 +1443,7 @@ async def _handle_command(cmd: str, payload: dict, cmd_id: str) -> None:
         )
         prompt = "Here are their messages: " + " | ".join(msgs[-200:])
         try:
-            profile = await generate_response(prompt, instructions, history=None)
+            profile = await generate_response(prompt, instructions, history=None, internal=True)
         except Exception as e:
             _write_result(cmd_id, {"ok": False, "reason": str(e)})
             return

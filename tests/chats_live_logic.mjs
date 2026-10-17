@@ -164,5 +164,89 @@ check("an event for someone not listed changes nothing", u === base);
   api.chatsReact = real;
 }
 
+// Passive server traffic updates an open channel without creating an AI reply request.
+{
+  const chats = await import("../webui/src/lib/chats.ts");
+  const get = (store) => { let value; store.subscribe((v) => (value = v))(); return value; };
+  const target = "discord_1", uid = "ch987654321098765432", key = chats.convKey(target, uid);
+  chats.chatCache.set({ [target]: { users: [], fetched: 1, loading: false, error: "" } });
+  chats.conversations.set({ [key]: { messages: [], loading: false, error: "", at: 1 } });
+  const event = { t: "channel_msg", target, uid, mid: "1234567890123456789", text: "hello community", ts: 2,
+                  mine: false, author: { id: "42", name: "Member" }, reactions: [{ name: "🔥", count: 1, mine: false }] };
+  chats.applyEvent(event);
+  let conversation = get(chats.conversations)[key];
+  check("passive server traffic keeps its speaker, snowflake and reactions",
+        conversation.messages[0].author?.name === "Member" && conversation.messages[0].mid === event.mid
+        && conversation.messages[0].reactions[0].name === "🔥");
+  check("observing a server channel does not put members on the waiting list", get(chats.chatCache)[target].users.length === 0);
+  chats.applyEvent({ ...event, t: "msg", name: "Member" });
+  check("a scheduled reply event does not duplicate a passively observed message", get(chats.conversations)[key].messages.length === 1);
+  chats.applyEvent({ ...event, mid: "1234567890123456790", mine: true });
+  check("the account's native server messages remain on its own side", get(chats.conversations)[key].messages[1].mine === true);
+}
+
+// Channel reply queues and contact reply queues have independent membership and state.
+{
+  const chats = await import("../webui/src/lib/chats.ts");
+  const { api } = await import("../webui/src/lib/api.ts");
+  const get = (store) => { let value; store.subscribe((v) => (value = v))(); return value; };
+  const target = "discord_1";
+  chats.chatCache.set({ [target]: { users: [{ id: "42", name: "DM contact", count: 1, snippet: "DM", state: { state: "waiting", since: 1 } }], fetched: 1, loading: false, error: "" } });
+  chats.serverChannelCache.set({ [target]: { channels: [], fetched: 1, loading: false, error: "" } });
+  const event = { t: "msg", target, uid: "ch555", id: "ch555", kind: "server", channel_id: "555", channel_name: "general",
+                  guild_id: "999", guild_name: "Community", author_id: "42", name: "#general", where: "#general · Community", mid: "500", snippet: "hello" };
+  chats.applyEvent(event);
+  chats.applyEvent({ ...event, author_id: "43", mid: "501", latest_author: { id: "43", name: "Another member" } });
+  chats.applyEvent({ t: "state", target, uid: "ch555", state: { state: "writing", since: 2 } });
+  let queue = get(chats.serverChannelCache)[target].channels;
+  check("new speakers stay in one channel conversation", queue.length === 1 && queue[0].id === "ch555" && queue[0].name === "#general" && queue[0].latest_author.name === "Another member");
+  check("channel progress does not change a contact's DM state", get(chats.chatCache)[target].users.length === 1 && get(chats.chatCache)[target].users[0].state.state === "waiting" && queue[0].state.state === "writing");
+  chats.applyEvent({ t: "done", target, uid: "ch555" });
+  check("answering a channel leaves the contact waiting", get(chats.serverChannelCache)[target].channels.length === 0 && get(chats.chatCache)[target].users.length === 1);
+  const real = api.reply, asked = [];
+  api.reply = async (id) => { asked.push(id); return { success: true }; };
+  // A stale client cache from before the category split still cannot include channels in Reply to all.
+  chats.chatCache.set({ [target]: { users: [{ id: "42", name: "DM", count: 1, snippet: "hi" }, { id: "ch555", kind: "server", count: 1, snippet: "channel" }], fetched: Date.now(), loading: false, error: "" } });
+  await chats.sendReplyAll(target);
+  check("contact Reply to all excludes stale server rows", asked.join() === "42", asked.join());
+  api.reply = real;
+}
+
+// Active channels stay tracked without ever entering the DM reply-all queue.
+{
+  const chats = await import("../webui/src/lib/chats.ts");
+  const { statusOf } = await import("../webui/src/lib/chatstatus.ts");
+  const get = (store) => { let v; store.subscribe((x) => (v = x))(); return v; };
+  const T = "discord_1";
+  const row = chats.asChannelConversation({ id: "ch555", kind: "server", channel_id: "555",
+    channel_name: "general", guild_name: "Night Owls", name: "#general", snippet: "", count: 0, active: true });
+  chats.chatCache.set({ [T]: { users: [{ id: "8", name: "Pat", count: 1 }], fetched: 1 } });
+  chats.serverChannelCache.set({ [T]: { channels: [], activeChannels: [row], fetched: 1 } });
+  chats.applyEvent({ t: "channel_msg", target: T, uid: "ch555", text: "hello", mid: "10", ts: 1,
+    author: { id: "9", name: "Taylor" } });
+  let channel = chats.trackedChannels(get(chats.serverChannelCache)[T])[0];
+  check("background channel activity updates preview but never creates a pending reply",
+    channel.text === "hello" && channel.count === 0 && get(chats.serverChannelCache)[T].channels.length === 0);
+  check("idle channel says listening instead of not picked up", statusOf(channel, { now: 10000 }).phase === "idle");
+  check("a stopped account is never shown as listening", statusOf(channel, { now: 10000, offline: true }).phase === "off");
+  check("the contact inbox and DM bulk queue stay separate", chats.entry(T).users.map((u) => u.id).join() === "8");
+  chats.applyEvent({ t: "msg", target: T, uid: "ch555", kind: "server", text: "hey", mid: "11", ts: 2 });
+  chats.applyEvent({ t: "state", target: T, uid: "ch555", state: { state: "writing", since: 2 } });
+  channel = chats.trackedChannels(get(chats.serverChannelCache)[T])[0];
+  check("checking output is visible as active work", statusOf({ ...channel, state: { state: "checking", since: 2 } }, { now: 3 }).short === "Checking reply");
+  check("queued channel progress appears once under its channel", channel.state?.state === "writing"
+    && chats.trackedChannels(get(chats.serverChannelCache)[T]).length === 1);
+  chats.applyEvent({ t: "channel_msg", target: T, uid: "ch555", text: "new ambient message", mid: "12", ts: 3 });
+  channel = chats.trackedChannels(get(chats.serverChannelCache)[T])[0];
+  check("a newer preview does not overwrite the queued reply state", channel.text === "new ambient message" && channel.state?.state === "writing");
+  chats.applyEvent({ t: "done", target: T, uid: "ch555" });
+  channel = chats.trackedChannels(get(chats.serverChannelCache)[T])[0];
+  check("answered active channels remain visible and return to listening", !!channel && !channel.state && statusOf(channel, { now: 4 }).phase === "idle");
+  chats.applyEvent({ t: "channel_msg", target: T, uid: "ch777", text: "inactive channel" });
+  check("a preview of an inactive channel does not enable tracking", chats.trackedChannels(get(chats.serverChannelCache)[T]).length === 1);
+  chats.applyEvent({ t: "active_channels", target: T, channels: [] });
+  check("deselected channels leave the tracked list immediately", chats.trackedChannels(get(chats.serverChannelCache)[T]).length === 0);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

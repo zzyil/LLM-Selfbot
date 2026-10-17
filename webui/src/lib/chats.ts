@@ -44,12 +44,22 @@ export type ChatUser = {
    * `author_id` who is asking in it, `where` "#channel · Server".
    */
   kind?: "server";
+  active?: boolean;
+  mine?: boolean;
+  origin?: "selected" | "discovered" | "inactive";
+  can_send?: boolean;
+  channel_reason?: string;
+  channel_name?: string;
+  guild_id?: string;
+  guild_name?: string;
+  latest_author?: { id: string; name: string; avatar?: string };
   channel_id?: string;
   author_id?: string;
   where?: string;
   /** Their latest message in full, and what came with it. */
   text?: string;
   mid?: string;
+  reactions?: { name: string; url?: string; count: number; mine?: boolean }[];
   attachments?: { url: string; name: string; type?: string; w?: number | null; h?: number | null; size?: number }[];
   /** A Lottie sticker (`format` "lottie") has no url; the panel plays it from its id. */
   stickers?: { name: string; url?: string; id?: string; format?: string }[];
@@ -88,12 +98,90 @@ const EMPTY: ChatEntry = { users: [], fetched: 0, loading: false, error: "" };
 
 export const chatCache = writable<Record<string, ChatEntry>>({});
 export const chatAccounts = writable<ChatAccount[]>([]);
+export type ChannelConversation = ChatUser & { kind: "server"; channel_id: string; channel_name: string; guild_id: string; guild_name: string };
+export type ChannelEntry = Omit<ChatEntry, "users"> & { channels: ChannelConversation[]; activeChannels?: ChannelConversation[] };
+export const serverChannelCache = writable<Record<string, ChannelEntry>>({});
+const EMPTY_CHANNELS: ChannelEntry = { channels: [], fetched: 0, loading: false, error: "" };
+const channelInflight = new Map<string, Promise<void>>();
+export const isChannelConversation = (row: { id?: string; kind?: string }) => row.kind === "server" || /^ch[0-9]+$/.test(String(row.id || ""));
+export function asChannelConversation(row: ChatUser): ChannelConversation {
+  const id = String(row.channel_id || row.id.replace(/^ch/, ""));
+  const [where, server = ""] = (row.where || "").split(" · ", 2);
+  const name = row.channel_name || where?.replace(/^#/, "") || id;
+  const guild = row.guild_name || server;
+  return { ...row, id: `ch${id}`, kind: "server", channel_id: id, channel_name: name,
+           guild_id: String(row.guild_id || ""), guild_name: guild, name: `#${name}`,
+           avatar: "", username: "", where: `#${name}${guild ? ` · ${guild}` : ""}` };
+}
+/** Active channels stay visible after a reply; pending state remains a separate queue. */
+export function trackedChannels(entry?: ChannelEntry): ChannelConversation[] {
+  const rows = new Map((entry?.activeChannels ?? []).map((row) => [row.id, row]));
+  for (const pending of entry?.channels ?? []) {
+    const active = rows.get(pending.id);
+    const merged = { ...active, ...pending, mine: false, ignored: false };
+    if (active && (active.ts || 0) > (pending.ts || 0))
+      for (const key of ["text", "mid", "attachments", "stickers", "embeds", "reactions", "author", "ts", "snippet", "latest_author", "mine"])
+        (merged as any)[key] = (active as any)[key];
+    rows.set(pending.id, merged);
+  }
+  return [...rows.values()];
+}
+
+export function applyActiveEvent(rows: ChannelConversation[], evt: ChatEvent): ChannelConversation[] {
+  if (evt.t === "active_channels") return (evt.channels ?? []).filter(isChannelConversation).map(asChannelConversation);
+  return rows.map((row) => {
+    if (row.id !== evt.uid) return row;
+    if (evt.t === "channel_msg") {
+      const fresh: any = { ts: evt.ts || 0, snippet: evt.text || "", latest_author: evt.author, mine: !!evt.mine };
+      for (const key of ["text", "mid", "attachments", "stickers", "embeds", "reactions", "author"])
+        fresh[key] = evt[key] ?? (["attachments", "stickers", "embeds", "reactions"].includes(key) ? [] : "");
+      return { ...row, ...fresh };
+    }
+    if (evt.t === "reactions" && row.mid === evt.mid) return { ...row, reactions: evt.reactions || [] };
+    if (evt.t === "edited" && row.mid === evt.mid) return { ...row, text: evt.text || "", snippet: evt.text || "" };
+    if (evt.t === "deleted" && row.mid === evt.mid)
+      return { ...row, text: "", snippet: "Message deleted", attachments: [], embeds: [], stickers: [], reactions: [] };
+    return row;
+  });
+}
+
+function patchChannels(target: string, changes: Partial<ChannelEntry>) {
+  serverChannelCache.update((c) => ({ ...c, [target]: { ...(c[target] ?? EMPTY_CHANNELS), ...changes } }));
+}
+export function refreshServerChannels(target: string, { force = false, maxAge = 0, quiet = false } = {}): Promise<void> {
+  if (!target || !target.startsWith("discord_")) return Promise.resolve();
+  const existing = channelInflight.get(target);
+  if (existing) return existing;
+  const current = get(serverChannelCache)[target] ?? EMPTY_CHANNELS;
+  if (!force && current.fetched && Date.now() - current.fetched < maxAge) return Promise.resolve();
+  patchChannels(target, { loading: true, error: "" });
+  const started = Date.now();
+  const done = quiet ? null : begin("servers", "Loading channel replies");
+  const run = (async () => {
+    try {
+      const data = await api.serverPending(target, force);
+      let channels: ChatUser[] = (data.channels || []).filter(isChannelConversation);
+      let activeChannels = (data.active_channels || []).filter(isChannelConversation).map(asChannelConversation);
+      for (const r of recent.get(target) ?? []) if (r.at >= started) {
+        channels = applyToUsers(channels, r.evt).filter(isChannelConversation);
+        activeChannels = applyActiveEvent(activeChannels, r.evt);
+      }
+      patchChannels(target, { channels: channels.map(asChannelConversation), activeChannels, fetched: Date.now(), loading: false, error: "",
+                             paused: !!data.paused, cooldownUntil: data.cooldown_until || 0, cooldownRange: data.cooldown_range ?? null });
+    } catch (e: any) {
+      patchChannels(target, { loading: false, error: e?.message || "Could not read channel replies" });
+    } finally { channelInflight.delete(target); done?.(); }
+  })();
+  channelInflight.set(target, run);
+  return run;
+}
 
 /**
  * An account another page asked to be shown, e.g. "Its chats" on an account
  * card. Chats picks it up when it opens and clears it.
  */
 export const chatsFocus = writable<string>("");
+export const serversFocus = writable<string>("");
 
 /**
  * Set while a reply is being sent.
@@ -163,7 +251,8 @@ export async function sendReply(target: string, userId: string) {
     if (!Object.keys(get(replying)).length && !Object.keys(get(replyingAll)).length) {
       chatBusy.set(false);
     }
-    refreshChats(target, { force: true });
+    if (/^ch[0-9]+$/.test(userId)) refreshServerChannels(target, { force: true });
+    else refreshChats(target, { force: true });
   }
 }
 
@@ -189,7 +278,7 @@ export async function sendReplyAll(target: string) {
     await stopReplyAll(target);
     return null;
   }
-  const queue = entry(target).users.map((u) => u.id);
+  const queue = entry(target).users.filter((u) => !isChannelConversation(u)).map((u) => u.id);
   const run: ReplyRun = { stop: null, open: new Set(), takenBack: new Set() };
   replyRuns.set(target, run);
   mark(replyingAll, target, true);
@@ -274,10 +363,12 @@ export function stopReplyAll(target: string): Promise<void> {
 }
 
 export function entry(target: string): ChatEntry {
-  return get(chatCache)[target] ?? EMPTY;
+  const current = get(chatCache)[target] ?? EMPTY;
+  return { ...current, users: current.users.filter((u) => !isChannelConversation(u)) };
 }
 
 function patch(target: string, changes: Partial<ChatEntry>) {
+  if (changes.users) changes = { ...changes, users: changes.users.filter((u) => !isChannelConversation(u)) };
   chatCache.update((c) => ({ ...c, [target]: { ...(c[target] ?? EMPTY), ...changes } }));
 }
 
@@ -313,9 +404,9 @@ export function refreshChats(
       const data = await api.chats(target, force);
       // Events that arrived while this was in flight are newer than the
       // answer; put them back over it, or a reply sent a second ago reappears.
-      let users: ChatUser[] = data.users || [];
+      let users: ChatUser[] = (data.users || []).filter((u: ChatUser) => !isChannelConversation(u));
       for (const r of recent.get(target) ?? []) {
-        if (r.at >= started) users = applyToUsers(users, r.evt);
+        if (r.at >= started && !isChannelConversation({ id: r.evt.uid, kind: r.evt.kind })) users = applyToUsers(users, r.evt);
       }
       patch(target, {
         users,
@@ -349,7 +440,7 @@ export function refreshChats(
 /** The last few events per account, so a refresh in flight can replay them. */
 const recent = new Map<string, { at: number; evt: ChatEvent }[]>();
 
-const MSG_KEYS = ["text", "mid", "attachments", "stickers", "embeds"] as const;
+const MSG_KEYS = ["text", "mid", "attachments", "stickers", "embeds", "author", "reactions"] as const;
 
 /**
  * One event applied to a waiting list, returning a new list. Mirrors
@@ -383,7 +474,8 @@ export function applyToUsers(users: ChatUser[], evt: ChatEvent): ChatUser[] {
       fresh.ignored = !!evt.ignored;
       if (evt.kind === "server") {
         // Someone else may be the one asking in that channel now.
-        for (const k of ["kind", "channel_id", "author_id", "where", "name", "avatar"]) if (k in evt) (fresh as any)[k] = evt[k];
+        for (const k of ["kind", "channel_id", "author_id", "where", "name", "avatar", "channel_name", "guild_id", "guild_name", "latest_author"]) if (k in evt) (fresh as any)[k] = evt[k];
+        if (!evt.latest_author && evt.author_id) fresh.latest_author = { id: String(evt.author_id), name: evt.name || "", avatar: evt.avatar || "" };
       }
       if (i >= 0) {
         const old = users[i];
@@ -789,14 +881,14 @@ function appendToConversation(target: string, evt: ChatEvent) {
     }));
     return;
   }
-  if (evt.t !== "msg" && evt.t !== "sent") return;
+  if (evt.t !== "msg" && evt.t !== "sent" && evt.t !== "channel_msg") return;
   if (evt.mid && cur.messages.some((m) => m.mid === evt.mid)) return;
-  const msg: ConvMessage = { mine: evt.t === "sent", ts: evt.ts || Date.now() / 1000 };
+  const msg: ConvMessage = { mine: evt.t === "sent" || (evt.t === "channel_msg" && !!evt.mine), ts: evt.ts || Date.now() / 1000 };
   for (const f of MSG_KEYS) if (f in evt) (msg as any)[f] = evt[f];
   conversations.update((c) => ({ ...c, [k]: { ...cur, messages: [...cur.messages, msg].slice(-KEEP_DRAWN) } }));
 }
 
-function applyEvent(evt: ChatEvent) {
+export function applyEvent(evt: ChatEvent) {
   const target = evt.target;
   if (!target) return;
   const log = recent.get(target) ?? [];
@@ -804,6 +896,16 @@ function applyEvent(evt: ChatEvent) {
   if (log.length > 100) log.splice(0, log.length - 100);
   recent.set(target, log);
   appendToConversation(target, evt);
+  const serverEvent = isChannelConversation({ id: evt.uid, kind: evt.kind });
+  const channelState = get(serverChannelCache)[target];
+  if (channelState?.fetched) {
+    if (evt.t === "meta") patchChannels(target, { paused: !!evt.paused, cooldownUntil: evt.cooldown_until || 0 });
+    else if (serverEvent || evt.t === "ignored" || evt.t === "active_channels") {
+      const channels = applyToUsers(channelState.channels, evt).filter(isChannelConversation).map(asChannelConversation);
+      patchChannels(target, { channels, activeChannels: applyActiveEvent(channelState.activeChannels ?? [], evt) });
+    }
+  }
+  if (serverEvent || evt.t === "active_channels") return;
   const current = get(chatCache)[target];
   // Never fetched: nothing to patch, and the first fetch brings it all anyway.
   if (!current || !current.fetched) return;
@@ -827,6 +929,7 @@ export function startChatLive(): () => void {
       return;
     }
     for (const t of Object.keys(get(chatCache))) refreshChats(t, { quiet: true });
+    for (const t of Object.keys(get(serverChannelCache))) refreshServerChannels(t, { quiet: true });
   });
 }
 
@@ -861,6 +964,11 @@ export async function toggleIgnore(target: string, userId: string): Promise<bool
 
 /** Drop someone from the cached list, after they have been replied to. */
 export function forget(target: string, userId: string) {
+  if (/^ch[0-9]+$/.test(userId)) {
+    const current = get(serverChannelCache)[target] ?? EMPTY_CHANNELS;
+    patchChannels(target, { channels: current.channels.filter((c) => c.id !== userId) });
+    return;
+  }
   const current = entry(target);
   patch(target, { users: current.users.filter((u) => u.id !== userId) });
 }
@@ -908,7 +1016,8 @@ export function startChatPrefetch(intervalMs = 60000): () => void {
       // Re-checked each iteration: a pass is seconds long, so the window can
       // be hidden partway through one.
       if (stopped || document.hidden) return;
-      await refreshChats(a.id, { maxAge: intervalMs / 2, quiet: true });
+      await Promise.all([refreshChats(a.id, { maxAge: intervalMs / 2, quiet: true }),
+                         a.platform === "discord" ? refreshServerChannels(a.id, { maxAge: intervalMs / 2, quiet: true }) : Promise.resolve()]);
       await new Promise((r) => setTimeout(r, 1200));
     }
   };

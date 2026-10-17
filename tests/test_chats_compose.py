@@ -57,10 +57,10 @@ check("typed in Discord while a reply is lined up drops it", "if _st and _st.get
 check("and takes them off the waiting list", "mark_responded(_rcp.id, message.channel.id)" in own)
 voice = runner[runner.index("audio_chunks = await generate_voice_message(spoken_response)"):]
 check("a voice note the bot sends counts as the bot's, not yours",
-      voice.index('set_reply_state(message.author.id, "sending")') < voice.index("await send_voice_message("))
+      voice.index('set_reply_state(message.author.id, "sending",') < voice.index("await send_voice_message("))
 lock = runner[runner.index("async with bot.global_send_lock:\n        # waited its turn"):]
 check("a reply that waited its turn checks again before it sends",
-      lock.index("bot.cancelled_replies") < lock.index('set_reply_state(message.author.id, "sending")'))
+      lock.index("bot.cancelled_replies") < lock.index('set_reply_state(message.author.id, "sending",'))
 
 job = runner[runner.index("async def _send_message_job("):runner.index("async def _reply_user_job(")]
 check("the Chats box sends as the account, dropping the lined up reply first",

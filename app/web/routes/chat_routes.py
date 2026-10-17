@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from app.core import ipc
 from app.utils.paths import DATA_DIR
+from app.utils.channel_conversations import apply_active_event, channel_row, is_channel, separate
 # connect_raw() instead of a bare sqlite3.connect(): a plain connection sets no busy_timeout, so these queries failed with "database is locked" rather than waiting whenever a bot runner happened to be writing.
 from app.utils.db import connect_raw
 
@@ -91,15 +92,18 @@ def _snap_number(tgt) -> int:
 
 
 # What a server conversation's row carries beyond a person's: see server_row() in the runner.
-_ROW_EXTRA = ("kind", "channel_id", "author_id", "where")
+_ROW_EXTRA = ("kind", "channel_id", "author_id", "where", "channel_name", "guild_id", "guild_name", "latest_author", "author")
 
 
 def apply_event(body: dict, evt: dict) -> dict:
     """One event applied to a waiting-list body, returning a new body. Never mutates the one passed in: this runs on a supervisor reader thread while the event loop may be serialising the same dict for a response."""
     kind = evt.get("t")
     uid = str(evt.get("uid", ""))
-    users = list(body.get("users") or [])
-    out = dict(body)
+    contacts, channels = separate(body.get("users") or [], body.get("channels") or [])
+    field = "channels" if is_channel(evt) else "users"
+    users = channels if field == "channels" else contacts
+    out = {**body, "users": contacts, "channels": channels,
+           "active_channels": apply_active_event(body.get("active_channels", []), evt)}
     if kind == "meta":
         out["paused"] = bool(evt.get("paused"))
         out["cooldown_until"] = evt.get("cooldown_until") or 0
@@ -110,10 +114,11 @@ def apply_event(body: dict, evt: dict) -> dict:
             users.pop(idx)
     elif kind == "state" and idx >= 0:
         users[idx] = {**users[idx], "state": evt.get("state")}
-    elif kind == "ignored" and any(str(u.get("id")) == uid or str(u.get("author_id") or "") == uid for u in users):
-        # a person's server rows too: the bot is off for them wherever they ask
-        users = [{**u, "ignored": bool(evt.get("ignored"))}
-                 if str(u.get("id")) == uid or str(u.get("author_id") or "") == uid else u for u in users]
+    elif kind == "ignored":
+        for key in ("users", "channels"):
+            out[key] = [{**u, "ignored": bool(evt.get("ignored"))}
+                        if str(u.get("id")) == uid or str(u.get("author_id") or "") == uid else u for u in out[key]]
+        return out
     elif kind == "payload" and idx >= 0:
         # The whole message, fetched on request for a row that only had its text: same message, so no count change.
         users[idx] = {**users[idx], **{k: evt[k] for k in _MSG_KEYS if k in evt}}
@@ -127,6 +132,9 @@ def apply_event(body: dict, evt: dict) -> dict:
         if evt.get("kind") == "server":
             # someone else may be the one asking in that channel now
             fresh.update({k: evt[k] for k in (*_ROW_EXTRA, "name", "avatar") if k in evt})
+            if "latest_author" not in evt and evt.get("author_id"):
+                fresh["latest_author"] = {"id": str(evt["author_id"]), "name": evt.get("name", ""), "avatar": evt.get("avatar", "")}
+                fresh["author"] = evt.get("author") or fresh["latest_author"]
         if idx >= 0:
             # The same message seen twice (a sweep that already had it) is not a second one.
             again = bool(evt.get("mid")) and users[idx].get("mid") == evt.get("mid")
@@ -141,8 +149,8 @@ def apply_event(body: dict, evt: dict) -> dict:
                           # a server conversation says where it is and who wrote
                           **{k: evt[k] for k in _ROW_EXTRA if k in evt}})
     else:
-        return body
-    out["users"] = users
+        return out
+    out[field] = [channel_row(row) for row in users] if field == "channels" else users
     return out
 
 
@@ -179,7 +187,7 @@ async def _chats_payload(tgt, fresh: bool = False) -> dict:
             if hit:
                 return hit["body"]
             raise HTTPException(status_code=504, detail="runner did not respond")
-        users = _stringify_ids(result.get("users", []), "id")
+        users, channels = separate(_stringify_ids(result.get("users", []), "id"), result.get("channels", []))
         if isinstance(tgt, str) and tgt.startswith("snap"):
             from app.utils import snappeople
             n = _snap_number(tgt)
@@ -198,6 +206,8 @@ async def _chats_payload(tgt, fresh: bool = False) -> dict:
                 u["name"] = meta.get("display_name") or meta.get("username") or u.get("name")
         body = {
             "users": users,
+            "channels": channels,
+            "active_channels": [channel_row(row) for row in result.get("active_channels", []) if is_channel(row)],
             "target": tgt,
             "truncated": bool(result.get("truncated")),
             "paused": result.get("paused", False),
@@ -237,7 +247,9 @@ async def warm_chats() -> None:
 @router.get("/api/chats")
 async def chats(request: Request, target: str = "", fresh: bool = False):
     tgt = _resolve_target(request, target)
-    return await _chats_payload(tgt, fresh=fresh)
+    body = await _chats_payload(tgt, fresh=fresh)
+    users, _ = separate(body.get("users", []), body.get("channels", []))
+    return {key: value for key, value in {**body, "users": users}.items() if key != "channels"}
 
 
 @router.get("/api/chats/archive")
@@ -245,7 +257,8 @@ def archive(request: Request, limit: int = 40, target: str = ""):
     """Conversations that have already been dealt with. The waiting list answers "who needs me", and then a conversation vanishes from it the moment it is answered, which leaves no way to look back at someone you spoke to an hour ago. Read from the message log rather than asked over IPC: it survives restarts, covers every account, and costs a local query instead of a round trip to a bot that might be busy.
 
     With a target, one account's only: a Discord account's people, or a Snapchat account's chats (its own log, by
-    chat id, named as Snapchat names them). Rows from before the log knew its account count as the first one's."""
+    chat id, named as Snapchat names them). Discord rows come from actual DM transcripts, so server-only
+    members in reply statistics cannot appear here. Legacy Snapchat rows without an account count as the first one's."""
     # Plain def: it only reads sqlite, and as async it did that on the event loop every page shares, during the startup warm-up of every tab.
     tgt = _resolve_target(request, target) if target else None
     snap = isinstance(tgt, str) and tgt.startswith("snap")
@@ -272,21 +285,22 @@ def archive(request: Request, limit: int = 40, target: str = ""):
                     """,
                     (n, n, cap)).fetchall()
             else:
-                where = "WHERE m.account = ? OR (m.account IS NULL AND ? = 1)" if n else ""
+                where = "WHERE m.account = ?" if n else "WHERE m.account BETWEEN 1 AND 999"
                 rows = conn.execute(
                     f"""
-                    SELECT m.user_id,
-                           COALESCE(us.username, m.username) AS name,
+                    SELECT m.uid,
+                           COALESCE(us.username, m.uid) AS name,
                            COUNT(*)  AS total,
                            MAX(m.ts) AS last_ts
-                    FROM message_log m
-                    LEFT JOIN user_stats us ON us.user_id = m.user_id
+                    FROM chat_log m
+                    LEFT JOIN user_stats us ON CAST(us.user_id AS TEXT) = m.uid
                     {where}
-                    GROUP BY m.user_id
+                    AND m.uid NOT LIKE 'ch%'
+                    GROUP BY m.uid
                     ORDER BY last_ts DESC
                     LIMIT ?
                     """,
-                    ((n, n, cap) if n else (cap,))).fetchall()
+                    ((n, cap) if n else (cap,))).fetchall()
         except sqlite3.OperationalError:
             rows = []          # nothing has spoken to this install yet
 
@@ -641,7 +655,12 @@ async def chat_around(request: Request):
     messages kept here put back in; from what is kept when it is stopped, and always for Snapchat."""
     from app.utils import chatlog
     body = await request.json()
-    tgt, uid, acct = _dm_of(request, body)
+    server_channel = _server_row_id(body.get("user_id"))
+    if server_channel:
+        tgt = _resolve_target(request, body.get("target", ""))
+        uid, acct = str(body["user_id"]), None
+    else:
+        tgt, uid, acct = _dm_of(request, body)
     direction = body.get("dir") or "around"
     if direction not in ("around", "older", "newer", "first"):
         raise HTTPException(status_code=400, detail="dir is around, older, newer or first")
@@ -655,15 +674,21 @@ async def chat_around(request: Request):
         return {"ok": True, "messages": found or [], "more": len(found or []) >= limit, "from_log": True,
                 "missing": found is None}
 
+    if server_channel and direction != "first" and not mid.isdigit():
+        raise HTTPException(status_code=400, detail="A numeric message ID is required.")
     if _is_snap(tgt) or (direction != "first" and not mid.isdigit()):
         return await kept()
     result = await ipc.send_and_wait(tgt, "chat_window", {"user_id": uid, "mid": mid or None, "dir": direction,
                                                           "limit": limit}, timeout=25.0)
     if result is None:
+        if server_channel:
+            raise HTTPException(status_code=504, detail="The account must be connected to read server history.")
         return {**(await kept()), "offline": True}
     if not result.get("ok"):
         raise HTTPException(status_code=502, detail=result.get("reason") or "could not read it")
     found = result.get("messages") or []
+    if server_channel:
+        return result
     if found:
         # Deleted on Discord, so it no longer has them; kept here, so they are shown where they were.
         have = {m.get("mid") for m in found}
@@ -885,15 +910,19 @@ def memory_list(request: Request, persona: str = ""):
                 entry["learned_at"] = learned
                 entry["learned"] = key
 
+    from app.utils import member_context
+    member_context.merge_people(users, pid)
     out = []
     for uid, entry in users.items():
         profile = profiles.get(uid) or {}
         entry["display_name"] = profile.get("name", "")
         # A face makes a list of names scannable in a way that a list of names is not.
         entry["avatar"] = profile.get("avatar", "")
-        entry["messages"] = stats.get(uid, {}).get("messages", 0)
-        entry["first_seen"] = stats.get(uid, {}).get("first_seen", 0)
-        entry["last_seen"] = last.get(uid, 0)
+        observed = entry.pop("observed", {})
+        entry["messages"] = max(stats.get(uid, {}).get("messages", 0), observed.get("messages", 0))
+        first = [t for t in (stats.get(uid, {}).get("first_seen", 0), observed.get("first_seen", 0)) if t]
+        entry["first_seen"] = min(first, default=0)
+        entry["last_seen"] = max(last.get(uid, 0), observed.get("last_seen", 0))
         entry["fact_count"] = len(entry["facts"])
         out.append(entry)
     # Snapchat's people (their ids are chat ids, not numbers): named, pictured and counted from what Snapchat's runner
@@ -922,13 +951,37 @@ def memory_list(request: Request, persona: str = ""):
     return {"users": out, "latest": latest}
 
 
+@router.get("/api/relationships")
+def relationships_overview(request: Request, persona: str = ""):
+    from app.utils import configstore, member_context, relationships
+    pid = _memory_persona(persona)
+    data = memory_list(request, persona)
+    people, servers = [], {}
+    for user in data["users"]:
+        if not user["user_id"].isdigit():
+            continue
+        for context in user.get("contexts", []):
+            if context["guild_id"]:
+                servers[context["guild_id"]] = context["guild_name"]
+        people.append({**user, "relationship": user.get("relationship") or relationships.get_relationship(user["user_id"], persona=pid),
+                       "interactions": member_context.interactions(user["user_id"], pid, limit=5)})
+    return {"people": people, "servers": [{"id": gid, "name": name} for gid, name in servers.items()],
+            "learning_enabled": relationships.server_enabled(configstore.effective(pid))}
+
+
 @router.get("/api/memory/{uid}")
 def memory_get(request: Request, uid: str, persona: str = ""):
     # Plain def: the database is read on FastAPI's threadpool, not on the event loop.
     from app.utils.memory import get_memory, get_persona
     pid = _memory_persona(persona)
     key = int(uid) if uid.isdigit() else uid
-    return {"facts": get_memory(key, persona=pid), "persona": get_persona(key, persona=pid)}
+    from app.utils.relationships import list_relationships
+    from app.utils.member_names import aliases
+    from app.utils import member_context
+    contexts = member_context.users(pid).get(str(key), {}).get("contexts", [])
+    return {"facts": get_memory(key, persona=pid), "persona": get_persona(key, persona=pid),
+            "relationships": list_relationships(key, persona=pid), "nicknames": aliases(key, persona=pid),
+            "contexts": contexts, "interactions": member_context.interactions(key, pid)}
 
 
 @router.put("/api/memory/{uid}")
@@ -1117,3 +1170,168 @@ async def memory_summary(request: Request, uid: str, force: bool = False, cached
     if stored:
         return _summary_out(stored, cached=True, stale=True, reason=reason)
     return {"ok": False, "enabled": True, "reason": reason}
+
+
+# Community vocabulary is separate from facts about people.
+def _lingo_ids(guild_id, channel_id):
+    if not str(guild_id).isdigit() or not str(channel_id).isdigit():
+        raise HTTPException(status_code=400, detail="Server and channel IDs must be numeric strings.")
+    return str(guild_id), str(channel_id)
+
+
+@router.get("/api/lingo")
+def lingo_list(request: Request, guild_id: str, channel_id: str | None = None, persona: str = ""):
+    from app.utils import lingo
+    guild, _ = _lingo_ids(guild_id, channel_id or "0")
+    return {"guild_id": guild, "entries": lingo.glossary(guild, channel_id, _memory_persona(persona))}
+
+
+@router.put("/api/lingo/{guild_id}")
+async def lingo_put(request: Request, guild_id: str, persona: str = ""):
+    from app.utils import lingo
+    body = await request.json()
+    guild, channel = _lingo_ids(guild_id, body.get("scope_channel", "0"))
+    try:
+        await asyncio.to_thread(lingo.set_definition, guild, body.get("term"), body.get("meaning"),
+                               channel, _memory_persona(persona))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"ok": True}
+
+
+@router.delete("/api/lingo/{guild_id}/{term}")
+async def lingo_delete(request: Request, guild_id: str, term: str, channel_id: str = "0", persona: str = ""):
+    from app.utils import lingo
+    guild, channel = _lingo_ids(guild_id, channel_id)
+    await asyncio.to_thread(lingo.remove, guild, term, channel, _memory_persona(persona))
+    return {"ok": True}
+
+
+@router.get("/api/server-memories")
+async def server_memories(request: Request, persona: str = ""):
+    from app.utils import configstore, personas, server_memory
+    from app.web import live
+    pid = _memory_persona(persona)
+    stored = await asyncio.to_thread(server_memory.remembered, pid)
+    accounts = sorted(web_id for web_id in live.running_accounts(request)
+                      if web_id.startswith("discord_") and personas.persona_of(web_id) == pid)
+
+    async def read(web_id):
+        try:
+            data = await ipc.send_and_wait(ipc.target_for(web_id), "server_memory", timeout=3)
+            return web_id, data if isinstance(data, dict) and "servers" in data else None
+        except Exception:
+            return web_id, None
+
+    answers = await asyncio.gather(*(read(account) for account in accounts))
+    active = [(account, data) for account, data in answers if data is not None]
+    cfg = await asyncio.to_thread(configstore.effective, pid)
+    bot_cfg = cfg.get("bot") or {}
+    companion = bot_cfg.get("companion") or {}
+    participation = companion.get("server") or {}
+    vocab = bot_cfg.get("server_lingo") or {}
+    return {"servers": server_memory.merge(stored, active),
+            "live_accounts": len(active), "unavailable_accounts": len(accounts)-len(active),
+            "settings": {"learning": bool(vocab.get("enabled", False)),
+                         "share_with_mutuals": bool(vocab.get("share_with_mutuals", True)),
+                         "participation": bool(companion.get("enabled") or participation.get("enabled")),
+                         "ambient_probability": participation.get("ambient_reply_probability", 0),
+                         "activity_window_seconds": participation.get("ambient_window_seconds", 600)}}
+
+
+# Server navigation uses only the selected Discord account's authenticated runner.
+def _server_target(request, explicit):
+    from app.web import live
+    targets = ipc.discover_targets()
+    web_id = str(explicit or next((key for key, value in targets.items() if value["platform"] == "discord"), ""))
+    meta = targets.get(web_id)
+    if not meta or meta["platform"] != "discord":
+        raise HTTPException(status_code=400, detail="Select a configured Discord account.")
+    if web_id not in live.running_accounts(request):
+        raise HTTPException(status_code=503, detail="Start this Discord account before opening its servers.")
+    return meta["target"]
+
+
+async def _server_action(request, target, command, payload=None):
+    result = await ipc.send_and_wait(_server_target(request, target), command, payload or {},
+                                     timeout=40 if command == "servers_join" else 15)
+    if result is None:
+        detail = ("The join result is not confirmed. Refresh servers before trying again."
+                  if command == "servers_join" else "This account did not answer. Check that it is connected.")
+        raise HTTPException(status_code=504, detail=detail)
+    return result
+
+
+@router.get("/api/servers")
+async def servers_list(request: Request, target: str = ""):
+    from app.utils import personas
+    resolved = _server_target(request, target)
+    result = await _server_action(request, target, "servers_list")
+    return {**result, "persona": personas.persona_of(f"discord_{resolved}")}
+
+
+@router.get("/api/servers/{guild_id}/channels")
+async def server_channels(request: Request, guild_id: str, target: str = ""):
+    from app.utils.discord_servers import snowflake
+    try:
+        guild = str(snowflake(guild_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return await _server_action(request, target, "servers_channels", {"guild_id": guild})
+
+
+@router.put("/api/servers/{guild_id}/activity")
+async def server_activity(request: Request, guild_id: str):
+    from app.utils.discord_servers import snowflake
+    body = await request.json()
+    selected, explore = body.get("selected_channel_ids"), body.get("explore")
+    if not isinstance(selected, list) or len(selected) > 512 or type(explore) is not bool:
+        raise HTTPException(status_code=400, detail="Choose channels and whether conversation exploration is enabled.")
+    try:
+        guild = str(snowflake(guild_id))
+        channels = list(dict.fromkeys(str(snowflake(cid)) for cid in selected))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return await _server_action(request, body.get("target"), "servers_activity",
+                                {"guild_id": guild, "selected_channel_ids": channels, "explore": explore})
+
+
+@router.post("/api/servers/invite")
+async def server_invite(request: Request):
+    from app.utils.discord_servers import invite_code
+    body = await request.json()
+    try:
+        code = invite_code(body.get("invite"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return await _server_action(request, body.get("target"), "servers_invite", {"invite": code})
+
+
+@router.post("/api/servers/join")
+async def server_join(request: Request):
+    from app.utils.discord_servers import invite_code, snowflake
+    body = await request.json()
+    try:
+        code, guild = invite_code(body.get("invite")), str(snowflake(body.get("guild_id")))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return await _server_action(request, body.get("target"), "servers_join", {"invite": code, "guild_id": guild})
+
+
+@router.post("/api/servers/watch")
+async def server_watch(request: Request):
+    from app.utils.discord_servers import snowflake
+    body = await request.json()
+    try:
+        channel = str(snowflake(body.get("channel_id")))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return await _server_action(request, body.get("target"), "servers_watch", {"channel_id": channel})
+
+
+@router.get("/api/servers/pending")
+async def server_pending(request: Request, target: str = "", fresh: bool = False):
+    tgt = _server_target(request, target)
+    body = await _chats_payload(tgt, fresh=fresh)
+    _, channels = separate(body.get("users", []), body.get("channels", []))
+    return {key: value for key, value in {**body, "channels": channels}.items() if key != "users"}

@@ -213,6 +213,7 @@ export const TABS: Tab[] = [
         blurb: "How long its replies are, the language it falls back to, typos, and not answering everything.",
         keys: [
           "bot.message_style.mode",
+          "bot.message_style.compose_in_bursts",
           "bot.message_style.max_chunk_chars",
           "bot.default_language",
           "bot.typo_chance",

@@ -170,6 +170,8 @@ def _issues(supervisor) -> list:
         # This computer, when any job runs there.
         local_models = [e["model"] for e in chain if e["provider"] == "local"] + \
             [plan[j]["model"] for j in providers.JOBS if plan[j]["provider"] == "local"]
+        # Local-only mode leaves unsupported jobs unset; an empty name is not a missing model.
+        local_models = [m for m in local_models if m]
         if local_models:
             local = localai.settings(config)
             probe = localai.probe(local["base_url"], timeout=2.0, api_key=local["api_key"])

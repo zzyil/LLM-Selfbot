@@ -216,7 +216,7 @@ r = client.get("/api/chats/archive?target=snapchat_1").json()["conversations"]
 check("a Snapchat account's answered chats are its own, with their pictures",
       [c["id"] for c in r] == ["chat-1"] and r[0]["avatar"].startswith("/api/chats/snap-picture/") and r[0]["name"] == "Step", str(r))
 r = client.get("/api/chats/archive?target=discord_1").json()["conversations"]
-check("and a Discord account's, its own", [c["id"] for c in r] == ["555"], str(r))
+check("and a Discord account's, actual DMs rather than reply statistics", {c["id"] for c in r} == {"7", "8"}, str(r))
 
 print("\n== Snapchat's bridge ==")
 os.environ["SNAP_ACCOUNT_INDEX"] = "1"

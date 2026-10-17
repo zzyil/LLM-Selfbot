@@ -17,6 +17,7 @@
   import UndoBar from "../lib/components/UndoBar.svelte";
   import StatDetail from "../lib/components/StatDetail.svelte";
   import IssueList from "../lib/components/IssueList.svelte";
+  import ServerOverview from "../lib/components/ServerOverview.svelte";
   import WidgetFrame from "../lib/dashboard/WidgetFrame.svelte";
   import WidgetBody from "../lib/dashboard/WidgetBody.svelte";
   import AddWidget from "../lib/dashboard/AddWidget.svelte";
@@ -389,6 +390,7 @@
   </div>
 {:else}
   <IssueList {issues} here="dashboard" />
+  <ServerOverview />
   <!-- ── Customising ──────────────────────────────────────────────────── -->
   <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
     <p class="text-[11px] text-faint">

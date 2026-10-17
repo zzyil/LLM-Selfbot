@@ -8,7 +8,7 @@ from app.utils.behavior import parse_reaction_tag
 _META_LINE_RE = re.compile(
     r"^\s*[\(\[\*\-]*\s*"
     r"(changed to|change to|translation|translated|in english|english version|"
-    r"original|note to self|as an ai|thinking|reasoning|analysis|here'?s the translation)"
+    r"original|note to self|self[ -]correction|internal (?:note|analysis)|draft response|as an ai|thinking|reasoning|analysis|here'?s the translation)"
     r"\b",
     re.IGNORECASE,
 )
@@ -58,25 +58,24 @@ def strip_meta(text: str) -> str:
     """Remove model meta-commentary (translations, reasoning, alternate versions) that sometimes leaks into a reply."""
     if not text:
         return text
+    text = strip_reasoning(text)
     kept = []
     for line in text.split("\n"):
         if _META_LINE_RE.match(line):
             break
         kept.append(line)
     cleaned = "\n".join(kept).strip()
-    if not cleaned:
-        cleaned = text  # whole thing matched, don't send an empty message
     # Strip inline parenthetical translation notes, e.g. "(translation: …)".
     cleaned = re.sub(
         # The class ends with an en dash, spelled as an escape in a plain string spliced onto the raw one: inside a raw string a backslash-u is six literal characters, not the dash.
-        r"[\(\[]\s*(translation|translated|english)\s*[:\-" "\u2013]"
+        r"[\(\[]\s*(translation|translated|english|self[ -]correction|note to self)\s*[:\-" "\u2013]"
         r"[^)\]]*[\)\]]",
         "",
         cleaned,
         flags=re.IGNORECASE,
     ).strip()
-    # Both passes can strip everything (a reply that was nothing but a note); returning "" would send a blank message, so keep the original.
-    return cleaned or text.strip()
+    # Empty means there is no chat message to deliver; never restore internal notes.
+    return cleaned
 
 
 

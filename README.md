@@ -4,6 +4,9 @@
 
 # LLMSelfbot
 
+This fork adds an Agent G companion preset for LM Studio, persistent relationships,
+and chat-style adaptation. See [Agent G setup and development](AGENT_G.md).
+
 **An AI that answers your Discord and Snapchat messages, and texts like a real person while it's at it.**
 
 Give it a personality, add an account, and leave it running.<br>
@@ -92,13 +95,15 @@ Everything happens in the app. You never type commands into Discord, and you nev
 | **Dashboard** | Is it running, replies today, charts, the live log. Drag the sections around |
 | **Profiles** | Each bot you run, which of them are running and on which accounts. Make one, copy one, move accounts between them, crop its face |
 | **Accounts** | Add Discord and Snapchat accounts. Start, stop, pause, restart, and pick each one's profile |
-| **Chats** | Who's waiting on a reply and how long until it comes. Answer one or all of them now, accept friend requests |
+| **Chats** | DMs waiting on a reply, active server channels and live reply progress. Open a channel to follow its conversation |
 | **Persona** | Who a profile is, its moods and how it reacts |
 | **Memory** | What it knows about everyone |
 | **Pictures** | The selfies and videos it sends, and their filters |
 | **Logs** | Everything the accounts print, filtered however you want |
 | **Settings** | Every option, grouped by what it's for, one line each |
 | **System** | Checks what's missing, backups, updates, and a QR code to open the app on your phone |
+
+Channels selected in Servers, including channels discovered through conversation, stay in Chats under Active channels after replies finish. Listening runs in the Discord account process and continues when the dashboard is closed; the app and account must remain running. Contact reply-all stays limited to DMs.
 
 Every page opens with its own little animation, and every button, switch and slider makes a sound. Both can be
 turned off.

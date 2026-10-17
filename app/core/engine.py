@@ -9,6 +9,7 @@ from typing import Optional
 from app.utils.ai import (
     generate_response,
     generate_response_image,
+    classify_memory_input,
     extract_memory,
     detect_memory_deletion,
     summarize_history,
@@ -22,6 +23,7 @@ from app.utils.memory import (
 from app.utils.mood import get_mood_prompt
 from app.utils.helpers import load_config, load_instructions, france_time_str
 from app.utils.logger import log_system
+from app.utils import conversation, output_guard
 
 def _bot_cfg() -> dict:
     """This account's settings (its persona's, on everyone's), read when they are used: read once as the module
@@ -409,9 +411,12 @@ _STYLE_GUIDES = {
         "after another like a real person would."
     ),
     "chatty": (
-        "You talk a lot and enjoy detailed replies. You may write longer "
-        "messages, but still break big walls of text into 2-4 separate "
-        "messages and never use formal structure."
+        "You like talking and can ramble when a topic, argument or personal stake hooks you. "
+        "That is permission to go on, not a request for a detailed reply every turn. "
+        "Small moments can get just a few words; stop when your immediate thought is out. "
+        "When you do ramble, follow that particular thought instead of adding a setup, "
+        "a polished joke and a wrap-up. Break a long rant into separate messages "
+        "only when it needs it; never use formal structure."
     ),
 }
 
@@ -499,12 +504,15 @@ def _spawn_memory_update(uid, content, response, memory):
 async def _update_memory_after_reply(uid, content, response, memory):
     """Deletion detection and fact extraction, off the reply's critical path."""
     try:
-        keys_to_delete = await detect_memory_deletion(content, memory)
+        disclosures = await classify_memory_input(content)
+        if not disclosures:
+            return
+        keys_to_delete = await detect_memory_deletion(content, memory, disclosures=disclosures)
         for key in keys_to_delete:
             delete_memory(uid, key)  # type: ignore[arg-type]
             memory.pop(key, None)
 
-        new_facts = await extract_memory(content, response, memory)
+        new_facts = await extract_memory(content, response, memory, disclosures=disclosures)
         for key, value in new_facts.items():
             set_memory(uid, key, value)  # type: ignore[arg-type]
             memory[key] = value
@@ -664,18 +672,8 @@ async def generate_ai_response(msg: IncomingMessage) -> Optional[str]:
 
     # ── History management ───────────────────────────────────────────────────
     history.append({"role": "user", "content": msg.content})
-    if len(history) > MAX_HISTORY * 2:
-        history = history[-(MAX_HISTORY * 2):]
-        message_history[history_key] = history
-
-    if len(history) > 20:
-        try:
-            summarised = await summarize_history(history, enriched)
-            if summarised:
-                history = summarised
-                message_history[history_key] = history
-        except Exception:
-            pass
+    history = await conversation.prepare_history(history, enriched, summarize_history)
+    message_history[history_key] = history
 
     # ── Generate response ────────────────────────────────────────────────────
     try:
@@ -685,6 +683,9 @@ async def generate_ai_response(msg: IncomingMessage) -> Optional[str]:
             )
         else:
             response = await generate_response(msg.content, enriched, history)
+    except output_guard.OutputBlocked:
+        log_system("[Output privacy] Reply withheld before delivery.")
+        return None
     except Exception as e:
         log_system(f"[Engine] AI error for {msg.user_name}: {e}")
         return None
@@ -706,6 +707,13 @@ async def generate_ai_response(msg: IncomingMessage) -> Optional[str]:
     _trimmed = strip_stage_directions(response)
     if _trimmed and _trimmed != response:
         response = _trimmed
+
+    # Check again after all text changes and before memory/history/media side effects.
+    try:
+        response = await output_guard.check(response, enriched + output_guard.POLICY, msg.content, history=history)
+    except output_guard.OutputBlocked:
+        log_system("[Output privacy] Reply withheld before delivery.")
+        return None
 
     # ── Post-response: memory extraction ── two more sequential model calls, neither of which changes the reply that has already been generated. Awaiting them here delayed every Snapchat reply by however long they took, so they run alongside the send instead.
     _spawn_memory_update(uid, msg.content, response, memory)
@@ -753,8 +761,7 @@ def add_user_message(user_id: str, channel_id: str, content: str):
     hist = message_history.setdefault(key, [])
     hist.append({"role": "user", "content": content})
     # Cap growth so a long pause can't grow one chat's history without bound.
-    if len(hist) > MAX_HISTORY * 2:
-        message_history[key] = hist[-(MAX_HISTORY * 2):]
+    message_history[key] = conversation.bound_history(hist)
 
 
 def has_pending(user_id: str, channel_id: str) -> bool:

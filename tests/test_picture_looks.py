@@ -243,6 +243,9 @@ async def fake_small(system, prompt, max_tokens):
     return '{"caption": "outside rn", "caption_pos": "lower", "time": true, "look": "warm", "emoji": ["☀️"]}'
 
 looks._small = fake_small
+from unittest.mock import AsyncMock, patch
+privacy = patch("app.utils.output_guard._verify", AsyncMock(return_value=True))
+privacy.start()
 spec = asyncio.run(looks.plan_touch("a selfie outside", ["them: send a pic"], "here u go", "en", ["caption", "time"], "Max", "Snapchat"))
 check("the AI's choice, kept to what it may use", spec == {"caption": "outside rn", "caption_pos": "lower", "time": True,
                                                          "sticker_pos": "top-right"}, str(spec))

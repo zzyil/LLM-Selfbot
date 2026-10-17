@@ -4,6 +4,9 @@ bot:
 
   # Prefix for bot commands
   prefix: "/"
+  chat_commands:
+    enabled: false
+    ignore_slash: true
 
   # The word(s) the AI responds to
   trigger: "John, Jon"
@@ -42,6 +45,8 @@ bot:
   # Set it up under Settings, Local AI, which finds a running server for you.
   local:
     enabled: false
+    # Agent G: restrict every inference chain to local models, including utility fallback.
+    only: false
     base_url: "http://127.0.0.1:11434/v1"
     model: ""
     api_key: "local"      # most servers ignore it but reject an empty one
@@ -54,6 +59,58 @@ bot:
     stt_model: ""         # hears voice messages  (whisper-1, faster-whisper, ...)
     tts_model: ""         # speaks               (kokoro, tts-1, ...)
     tts_voice: ""         # voice names are per-engine (af_sky, alloy, ...)
+
+  # Active chat history, independent of Discord's object cache.
+  history:
+    max_messages: 30
+    summarize_after: 20
+    keep_recent: 6
+    max_bytes: 32768  # UTF-8 input budget, including the persona text
+  server_lingo:
+    enabled: false
+    share_with_mutuals: true
+    max_terms: 200
+    learning_min_messages: 6
+    learning_interval_seconds: 120
+
+  character_chat:
+    social_awareness: false  # interpret claims, teasing and unfamiliar slang against the character and conversation
+    react_to_prompt_bait: false  # protect character identity from role changes, including delayed reply commands
+    bait_replies: []  # optional custom fallbacks; empty uses varied, escalating character reactions
+
+  # Agent G companion mode. Opt in via scripts/setup_agent_g.py before first launch.
+  # With follow_joined_servers off, empty channel and server lists answer nothing.
+  companion:
+    enabled: false
+    allowed_channel_ids: []
+    allowed_guild_ids: []       # optional server restrictions
+    follow_joined_servers: false # character preset enables this when no restrictions are supplied
+    include_threads: true      # threads inherit an allowed parent channel
+    server:
+      enabled: false           # shared server chat without changing DM access
+      names: ["G"]
+      history_messages: 40
+      reply_to_name: true
+      reply_to_greetings: true  # standalone greetings can start a quiet channel conversation
+      greeting_quiet_seconds: 180
+      greeting_cooldown_seconds: 300
+      followup_seconds: 45
+      ambient_reply_probability: 0.0
+      ambient_min_messages: 8
+      ambient_min_members: 2
+      ambient_read_seconds: 45
+      ambient_window_seconds: 600
+      ambient_check_seconds: 30
+      ambient_cooldown_seconds: 180
+      ambient_global_cooldown_seconds: 90
+      batch_wait_seconds: 3
+      reply_cooldown_seconds: 20
+      max_reply_age_seconds: 120
+      max_direct_reply_age_seconds: 300  # accepted replies can finish while the channel stays busy
+      learn_from_chat: true
+      learn_nicknames: true  # associate names with members through evidenced calls and responses
+      learning_min_messages: 4
+      learning_interval_seconds: 120
 
   # The summary card on the Memory page: what you and each person have been
   # talking about, written from their last few messages when you open them.
@@ -112,6 +169,12 @@ bot:
 
   # Wait and collect multiple messages before responding
   batch_messages: true
+
+  # Remain available while a conversation is active; refreshed by accepted chat.
+  active_chat:
+    enabled: true
+    minutes: 120
+    max_batch_wait_seconds: 8
 
   # Time before responding
   batch_wait_times:
@@ -258,6 +321,9 @@ bot:
   # talkative, longer replies, still split into 2-4 messages.
   message_style:
     mode: balanced           # short | balanced | chatty
+    # Local-only text replies; requires a server supporting JSON schema (LM Studio).
+    # Fragments stay within the existing reply/message count limits.
+    compose_in_bursts: false
     # max_chunk_chars: 400   # optional override per mode (180/400/800 default)
 
   # --- Emoji reactions ---

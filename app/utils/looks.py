@@ -650,7 +650,17 @@ async def plan_touch(description: str, recent: list, reply: str, lang: str, allo
         if strict:
             raise
         return {}
-    return clean_touch(_json_object(text), allowed)
+    spec = clean_touch(_json_object(text), allowed)
+    visible = "\n".join(str(spec[k]) for k in ("caption", "big_text") if spec.get(k))
+    if visible:
+        from app.utils import output_guard
+        try:
+            await output_guard.check(visible, prompt + output_guard.POLICY, chat)
+        except output_guard.OutputBlocked:
+            if strict:
+                raise
+            return {}  # An undecorated photo is safer than a leaked caption.
+    return spec
 
 
 def describe_touch(spec: dict) -> str:

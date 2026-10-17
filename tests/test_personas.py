@@ -82,6 +82,22 @@ check("going back to everyone's for a setting", "bot.local.model" not in persona
 check("overridden says so for the key, inside it, or around it", personas.overridden("juniper", "bot.default_language")
       and personas.overridden("juniper", "bot") and not personas.overridden("juniper", "bot.prefix"))
 
+print("\n== editing one setting inside an overridden group ==")
+configstore.set_value("bot.character_chat", {"react_to_prompt_bait": True, "bait_replies": ["huh"]}, "juniper")
+configstore.set_value("bot.character_chat.social_awareness", True, "juniper")
+group = configstore.effective("juniper")["bot"]["character_chat"]
+check("a new child preserves its overridden siblings", group ==
+      {"react_to_prompt_bait": True, "bait_replies": ["huh"], "social_awareness": True}, str(group))
+configstore.set_value("bot.character_chat.social_awareness", False, "juniper")
+group = configstore.effective("juniper")["bot"]["character_chat"]
+check("returning one child to the default keeps the other overrides", not group["social_awareness"]
+      and group["react_to_prompt_bait"] and group["bait_replies"] == ["huh"], str(group))
+configstore.set_value("bot.character_chat", {"react_to_prompt_bait": True}, "juniper")
+check("replacing an entire group still replaces its descendants",
+      personas.overrides("juniper").get("bot.character_chat") == {"react_to_prompt_bait": True}
+      and not any(k.startswith("bot.character_chat.") for k in personas.overrides("juniper")))
+configstore.reset("bot.character_chat", "juniper")
+
 print("\n== which persona a runner is ==")
 os.environ.pop("LLMSELFBOT_ACCOUNT", None)
 check("the panel is no account, and reads everyone's", personas.current() is None

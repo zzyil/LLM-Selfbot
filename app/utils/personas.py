@@ -64,6 +64,7 @@ _HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 GLOBAL_ONLY = (
     "services", "notifications", "discord.enabled", "snapchat.enabled", "bot.owner_id",
     "bot.local.base_url", "bot.local.api_key", "bot.local.autostart", "bot.local.context_length",
+    "bot.local.only",
     "bot.profile_cache", "bot.memory_summary", "bot.per_account_persona",
 )
 
@@ -402,9 +403,15 @@ def set_override(pid: str, key: str, value, base: dict | None = None) -> None:
     with _lock:
         current = dict(overrides(pid))
         items = _flatten(key, value) if holds_global(key) and isinstance(value, dict) else {key: value}
-        # Whatever this key held before, inside it or over it, goes: the new value replaces all of it.
+        # Editing one child of a grouped override preserves its siblings. Expand the
+        # ancestor first; replacing the whole group still replaces all descendants.
+        for ancestor in list(current):
+            if key.startswith(ancestor + "."):
+                previous = current.pop(ancestor)
+                if isinstance(previous, dict):
+                    current.update(_flatten(ancestor, previous))
         for k in list(current):
-            if k == key or k.startswith(key + ".") or key.startswith(k + "."):
+            if k == key or k.startswith(key + "."):
                 current.pop(k)
         for k, v in items.items():
             if is_global_only(k):
@@ -664,6 +671,8 @@ def create(name: str, color: str = "", copy_from: str | None = None, copy_memory
                 from app.utils import memory
                 memory.copy_persona_memory(copy_from, pid)
                 db.copy_persona_summaries(copy_from, pid)
+                from app.utils import lingo
+                lingo.copy_persona(copy_from, pid)
         pictures_dir(pid).mkdir(parents=True, exist_ok=True)
     return get(pid)
 

@@ -138,6 +138,29 @@ h = health()
 check("cleared once both halves are set",
       not [i for i in h["issues"] if "Telegram" in i["title"]], str(h["issues"]))
 
+print("\n== local-only chat does not require voice models ==")
+import copy
+from unittest.mock import patch
+from app.utils import localai, localfix
+cfg = copy.deepcopy(helpers.load_config())
+entry = {"provider": "local", "model": "gemma-local"}
+cfg["bot"]["local"].update(enabled=True, only=True, model=entry["model"],
+                             base_url="http://127.0.0.1:1235/v1", stt_model="", tts_model="")
+cfg["bot"]["models"] = {"replies": [entry], "small": entry, "vision": entry}
+probe = {"ok": True, "locked": False, "error": "", "models": [entry["model"]]}
+with patch.object(helpers, "load_config", return_value=cfg), \
+     patch.object(localai, "probe", return_value=probe), \
+     patch.object(localfix, "too_big", return_value=None):
+    h = health()
+    missing = [i for i in h["issues"] if "not on that server" in i["title"]]
+    check("unset voice jobs do not report a missing model", not missing, str(missing))
+    cfg["bot"]["models"]["stt"] = {"provider": "local", "model": "missing-whisper"}
+    h = health()
+    missing = [i for i in h["issues"] if "not on that server" in i["title"]]
+    check("a configured voice model that is absent is still reported",
+          len(missing) == 1 and missing[0]["title"] == "missing-whisper is not on that server",
+          str(missing))
+
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
 shutil.rmtree(SANDBOX, ignore_errors=True)
 sys.exit(1 if FAIL else 0)
