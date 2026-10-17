@@ -137,7 +137,8 @@ def get_batch_wait_time(server: bool = False, message=None):
 
 config = load_config()
 
-from app.utils.ai import init_ai, generate_response, generate_response_image, extract_memory, detect_memory_deletion, transcribe_voice, summarize_history, summarize_conversation, detect_language, generate_nudge, reset_client_index, fallback_model
+from app.utils import member_names
+from app.utils.ai import init_ai, generate_response, generate_response_image, classify_memory_input, extract_memory, detect_memory_deletion, transcribe_voice, summarize_history, summarize_conversation, detect_language, generate_nudge, reset_client_index, fallback_model
 from dotenv import load_dotenv
 from discord.ext import commands
 from app.utils.split_response import split_response
@@ -3892,9 +3893,14 @@ async def _update_memory_after_reply(author, prompt, response):
         return
     uid = author.id
     try:
-        current_mem = bot._memory_cache.get(uid, {})
+        if uid not in bot._memory_cache:
+            bot._memory_cache[uid] = get_memory(uid)
+        current_mem = bot._memory_cache[uid]
+        disclosures = await classify_memory_input(prompt)
+        if not disclosures:
+            return
         if current_mem:
-            keys_to_delete = await detect_memory_deletion(prompt, current_mem)
+            keys_to_delete = await detect_memory_deletion(prompt, current_mem, disclosures=disclosures)
             for key in keys_to_delete:
                 if key in current_mem:
                     delete_memory(uid, key)
@@ -3902,7 +3908,7 @@ async def _update_memory_after_reply(author, prompt, response):
                     log_system(f"Memory deleted for {author.name}: {key}")
 
         current_mem_snapshot = dict(bot._memory_cache.get(uid, {}))
-        facts = await extract_memory(prompt, response, existing_memory=current_mem_snapshot)
+        facts = await extract_memory(prompt, response, existing_memory=current_mem_snapshot, disclosures=disclosures)
         for key, value in facts.items():
             value = str(value).strip()
             if not value or str(key).startswith("__"):
@@ -3953,17 +3959,6 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
 
     profile_block = await _get_user_profile_block(message.author)
 
-    if profile_block:
-        if "display name:" in profile_block and "name" not in memory:
-            try:
-                display = getattr(message.author, 'global_name', None) or message.author.display_name
-                if display and display != message.author.name:
-                    set_memory(uid, "name", display)
-                    memory["name"] = display
-                    memory_block = format_memory_for_prompt(memory)
-            except Exception:
-                pass
-
     # The persona's text read for every reply (a stat when it has not changed): written in the panel, from Telegram
     # or by a command, every account on that persona speaks with the new one from its next reply.
     enriched_instructions = load_instructions() + mood_block + memory_block + profile_block
@@ -3979,6 +3974,7 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
         enriched_instructions += bot.active_chat.context_block(message)
     shared_guilds = await bot.mutual_vocabulary.for_message(message, prompt, history)
     enriched_instructions += lingo.context_block(message, prompt, history, shared_guilds=shared_guilds)
+    enriched_instructions += member_names.context_block(message)
 
     # in a server the history is the whole channel, several people talking, and each of their turns is prefixed with who said it; the model has to be told that, or it reads the names as part of what was said and starts prefixing its own replies the same way
     if in_server(message.channel):
@@ -4766,6 +4762,10 @@ async def on_raw_message_delete(payload):
         learner = getattr(bot, "server_lingo", None)
         if learner is not None:
             learner.invalidate(payload.channel_id, payload.message_id)
+        names = getattr(bot, "member_nicknames", None)
+        if names is not None:
+            names.invalidate(payload.channel_id, payload.message_id)
+        await asyncio.to_thread(member_names.forget_source, payload.message_id)
         await asyncio.to_thread(lingo.forget_source, payload.message_id)
         if _server_chat is not None:
             _server_chat.delete(payload.channel_id, payload.message_id)
@@ -4791,6 +4791,10 @@ async def on_raw_message_edit(payload):
             learner = getattr(bot, "server_lingo", None)
             if learner is not None:
                 learner.invalidate(payload.channel_id, payload.message_id, data.get("content") or "")
+            names = getattr(bot, "member_nicknames", None)
+            if names is not None:
+                names.invalidate(payload.channel_id, payload.message_id, data.get("content") or "")
+            await asyncio.to_thread(member_names.forget_source, payload.message_id)
             await asyncio.to_thread(lingo.forget_source, payload.message_id)
         if _server_chat is not None and "content" in data:
             _server_chat.edit(payload.channel_id, payload.message_id, data.get("content") or "")
@@ -4926,7 +4930,16 @@ def _lingo_can_learn(message):
 
 
 def _observe_server_lingo(message):
-    if not lingo.settings()["enabled"] or not _lingo_can_learn(message):
+    if not _lingo_can_learn(message):
+        return
+    if member_names.settings()["enabled"]:
+        names = getattr(bot, "member_nicknames", None)
+        if names is None:
+            names = bot.member_nicknames = member_names.learner(
+                can_learn=_lingo_can_learn, report=lambda exc: log_error("Member nicknames", type(exc).__name__),
+                ready=lambda: _server_chat is None or not _server_chat.reply_tasks)
+        names.observe(message)
+    if not lingo.settings()["enabled"]:
         return
     learner = getattr(bot, "server_lingo", None)
     if learner is None:
@@ -5442,6 +5455,9 @@ async def _run_token(token: str, index: int):
         else:
             raise
     finally:
+        for learner_name in ("server_lingo", "member_nicknames"):
+            if (learner := getattr(bot, learner_name, None)) is not None:
+                await learner.close()
         if _server_chat is not None:
             await _server_chat.close()
         if _server_access is not None and _server_access.activity is not None:

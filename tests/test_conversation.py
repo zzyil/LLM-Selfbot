@@ -169,8 +169,12 @@ class CharacterConversation(unittest.IsolatedAsyncioTestCase):
     async def test_member_self_disclosures_and_corrections_still_work_without_privileged_keys(self):
         from app.utils import ai
         response = types.SimpleNamespace(choices=[types.SimpleNamespace(message=types.SimpleNamespace(
-            content='{"age": "24", "__persona__": "boomer"}'))])
+            content=json.dumps({"facts": [
+                {"key": "age", "value": "24", "kind": "self_report", "quote": "actually i'm 24"},
+                {"key": "__persona__", "value": "boomer", "kind": "self_report", "quote": "actually i'm 24"},
+            ]})))])
         with patch.object(conversation, "_config", return_value=config()), patch.object(ai, "_initialised", True), \
+                patch.object(ai, "classify_memory_input", new_callable=AsyncMock, return_value=["actually i'm 24"]), \
                 patch.object(ai, "_create_small_completion", new_callable=AsyncMock, return_value=response) as completion:
             self.assertEqual(await ai.extract_memory("actually i'm 24", "okay", {"__persona__": "be warm"}),
                              {"age": "24"})

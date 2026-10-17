@@ -9,6 +9,7 @@ from typing import Optional
 from app.utils.ai import (
     generate_response,
     generate_response_image,
+    classify_memory_input,
     extract_memory,
     detect_memory_deletion,
     summarize_history,
@@ -500,12 +501,15 @@ def _spawn_memory_update(uid, content, response, memory):
 async def _update_memory_after_reply(uid, content, response, memory):
     """Deletion detection and fact extraction, off the reply's critical path."""
     try:
-        keys_to_delete = await detect_memory_deletion(content, memory)
+        disclosures = await classify_memory_input(content)
+        if not disclosures:
+            return
+        keys_to_delete = await detect_memory_deletion(content, memory, disclosures=disclosures)
         for key in keys_to_delete:
             delete_memory(uid, key)  # type: ignore[arg-type]
             memory.pop(key, None)
 
-        new_facts = await extract_memory(content, response, memory)
+        new_facts = await extract_memory(content, response, memory, disclosures=disclosures)
         for key, value in new_facts.items():
             set_memory(uid, key, value)  # type: ignore[arg-type]
             memory[key] = value

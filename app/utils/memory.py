@@ -58,6 +58,8 @@ def clear_memory(user_id: int, persona=None):
         conn.execute("DELETE FROM user_memory WHERE persona = ? AND user_id = ?", (persona_key(persona), user_id))
     from app.utils.relationships import clear_relationships
     clear_relationships(user_id, persona)
+    from app.utils.member_names import clear_user
+    clear_user(user_id, persona)
 
 
 def copy_persona_memory(src: str, dst: str):
@@ -70,6 +72,9 @@ def copy_persona_memory(src: str, dst: str):
         except sqlite3.OperationalError:
             conn.execute("INSERT OR REPLACE INTO user_memory (persona, user_id, key, value) "
                          "SELECT ?, user_id, key, value FROM user_memory WHERE persona = ?", (dst, src))
+
+    from app.utils.member_names import copy_persona
+    copy_persona(src, dst)
 
 
 # ── Per-user persona overrides ────────────────────────────────────────────────

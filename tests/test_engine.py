@@ -54,6 +54,8 @@ class FakeCompletions:
         sysmsg = next((m["content"] for m in messages if m["role"] == "system"), "")
         if "language detector" in sysmsg:
             return _Resp(o.lang)
+        if "classify speech acts" in sysmsg:
+            return _Resp(o.disclosures)
         if "memory extractor" in sysmsg:
             return _Resp(o.extract)
         if "memory auditor" in sysmsg:
@@ -69,6 +71,7 @@ class FakeClient:
         self.reply = "yo whats up"
         self.lang = "fr"
         self.extract = "{}"
+        self.disclosures = '{"disclosures": []}'
         self.delete = "[]"
         self.chat = types.SimpleNamespace(completions=FakeCompletions(self))
 
@@ -126,11 +129,14 @@ check("returns empty on failure (caller keeps cached lang)", run(ai.detect_langu
 print("\n== ai: extract_memory / detect_memory_deletion ==")
 c = install(1)
 fence = chr(96) * 3
-c[0].extract = fence + "json\n" + '{"City": "Paris", "Fav Game": "Chess", "x": ""}' + "\n" + fence
-facts = run(ai.extract_memory("i live in paris", "cool"))
+c[0].disclosures = '{"disclosures": ["i live in paris", "i like chess"]}'
+c[0].extract = fence + "json\n" + '{"facts":[{"key":"City","value":"Paris","kind":"self_report","quote":"i live in paris"},' + \
+    '{"key":"Fav Game","value":"Chess","kind":"self_report","quote":"i like chess"}]}' + "\n" + fence
+facts = run(ai.extract_memory("i live in paris and i like chess", "cool"))
 check("json fence stripped + keys normalised", facts == {"city": "Paris", "fav_game": "Chess"}, str(facts))
 c[0].extract = "here is nothing useful"
 check("non-json returns empty dict", run(ai.extract_memory("hi", "yo")) == {})
+c[0].disclosures = '{"disclosures": ["i lied"]}'
 c[0].delete = '["age", "city", 5]'
 check("deletion list filters non-strings", run(ai.detect_memory_deletion("i lied", {"age": "22"})) == ["age", "city"])
 check("no stored memory means no deletion call", run(ai.detect_memory_deletion("i lied", {})) == [])

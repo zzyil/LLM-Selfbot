@@ -174,6 +174,8 @@ CONFIG_SCHEMA = [
     {"key": "bot.tts.tones", "type": "json", "label": "Delivery", "section": "Behaviour"},
     {"key": "bot.companion.server.enabled", "type": "bool", "label": "Join server conversations",
      "section": "Conversation", "default": False},
+    {"key": "bot.companion.server.learn_nicknames", "type": "bool", "label": "Learn member nicknames from conversations",
+     "section": "Memory", "default": True},
     {"key": "bot.companion.server.reply_to_greetings", "type": "bool", "label": "Reply to greetings in quiet channels",
      "section": "Conversation", "default": True},
     {"key": "bot.companion.server.greeting_quiet_seconds", "type": "int", "label": "Quiet greeting: no other speakers for (s)",

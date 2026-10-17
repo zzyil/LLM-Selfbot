@@ -381,21 +381,26 @@ async def learn(guild_id, scope_channel, messages, *, still_current=None):
 class Learner:
     """Bounded, rate-limited observation, shared by both server reply modes."""
     def __init__(self, *, can_learn, report=lambda exc: None, learn_batch=learn, clock=time.monotonic,
-                 sleep=asyncio.sleep):
+                 sleep=asyncio.sleep, get_settings=settings, eligible=None, payload_of=None,
+                 task_name="server-vocabulary", ready=lambda: True):
         self.can_learn, self.report, self.learn_batch, self.clock = can_learn, report, learn_batch, clock
-        self.sleep = sleep
+        self.sleep, self.get_settings = sleep, get_settings
+        self.eligible, self.payload_of, self.task_name = eligible, payload_of, task_name
+        self.ready = ready
         self.channels, self.last, self.revisions = OrderedDict(), {}, {}
         self.jobs, self.slot = {}, asyncio.Semaphore(1)
 
     def _eligible(self, batch):
+        if self.eligible is not None:
+            return self.eligible(batch), False
         explicit = any(_DEFINITION.search(item.content) for item in batch) or any(
             _QUESTION.search(first.content) and not _QUESTION.search(second.content)
             for first, second in pairwise(batch))
-        config = settings()
+        config = self.get_settings()
         return explicit or len(batch) >= config["learning_min_messages"], explicit
 
     def observe(self, message):
-        if conversation.ignored_chat_message(message) or not settings()["enabled"] or not self.can_learn(message) \
+        if conversation.ignored_chat_message(message) or not self.get_settings()["enabled"] or not self.can_learn(message) \
                 or not (message.content or "").strip():
             return
         key = (str(message.guild.id), str(message.channel.id))
@@ -416,31 +421,35 @@ class Learner:
 
     def _schedule(self, key):
         if key not in self.jobs and self._eligible(self.channels[key])[0]:
-            self.jobs[key] = asyncio.create_task(self._run(key), name="server-vocabulary")
+            self.jobs[key] = asyncio.create_task(self._run(key), name=self.task_name)
 
     async def _run(self, key):
         try:
             while key in self.channels:
                 batch = self.channels[key]
                 eligible, explicit = self._eligible(batch)
-                if not settings()["enabled"] or not eligible or not batch or not self.can_learn(batch[-1]):
+                if not self.get_settings()["enabled"] or not eligible or not batch or not self.can_learn(batch[-1]):
                     return
-                cooldown = 10 if explicit else settings()["learning_interval_seconds"]
+                cooldown = 10 if explicit else self.get_settings()["learning_interval_seconds"]
                 await self.sleep(max(1, self.last.get(key, float("-inf")) + cooldown - self.clock()))
+                if not self.ready():
+                    await self.sleep(3)
+                    continue
                 async with self.slot:
                     revision = self.revisions[key]
                     messages = [item for item in batch if not conversation.ignored_chat_message(item)
                                 and self.can_learn(item)]
-                    if not messages or not settings()["enabled"]:
+                    if not messages or not self.get_settings()["enabled"]:
                         return
                     self.last[key] = self.clock()
-                    payload = [{"id": str(item.id), "author_id": str(item.author.id),
+                    payload = [self.payload_of(item) if self.payload_of is not None else
+                               {"id": str(item.id), "author_id": str(item.author.id),
                                 "text": (item.content or "")[:2000]} for item in messages]
                     scope = source_scope(messages[-1])
                     await self.learn_batch(key[0], scope, payload,
                                            still_current=lambda revision=revision, messages=messages, scope=scope:
                                            self.revisions.get(key) == revision
-                                           and settings()["enabled"]
+                                           and self.get_settings()["enabled"]
                                            and all(self.can_learn(item) for item in messages)
                                            and source_scope(messages[-1]) == scope)
                 if self.revisions.get(key) == revision:

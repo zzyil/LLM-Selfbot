@@ -413,6 +413,7 @@ batch_wait_seconds: 3
 reply_cooldown_seconds: 20
 max_reply_age_seconds: 120
 learn_from_chat: true
+learn_nicknames: true
 learning_min_messages: 4
 learning_interval_seconds: 120
 ```
@@ -453,6 +454,40 @@ same character. It can learn while staying silent. Other members' words never en
 person's fact extractor. Passive chatter and ambient replies don't alter friendship
 scores; those require conversation directed to the companion. Live history tracks
 edits and deletions. No model weights are trained.
+
+All automatically learned member facts first pass a neutral speech-act classifier.
+It selects source spans that read as sincere disclosures or clear address requests;
+jokes, lyrics, memes, sarcasm, boasts, hypotheticals, uncertain guesses and third-party
+claims are omitted. A separate extractor proposes short facts from only those spans,
+with an exact source quote for each. Invalid or unavailable classification means no
+automatic addition or retraction. The same check covers every topic, including age,
+location, work, interests, relationships and plans. One interpretation is shared by
+the addition and retraction paths, outside reply delivery. Replies and summaries retain
+the difference between a claim and an established fact; model interpretation remains
+fallible. Credible introductions become `self_reported_name`, not the name used to
+address someone. Explicit address requests can set `preferred_name`, including playful
+nicknames. Discord profile names remain profile data rather than being copied into a
+real-name fact.
+
+With `learn_nicknames` enabled, the character also observes who calls a member by a
+name and who responds. It uses a neutral background assessment after four observed
+messages from at least two members, at most every two minutes per channel. Each
+proposal must cite an actual call and a nearby response by a different, stable member
+ID. A single exchange is tentative; two independent calls and responses confirm an
+association, or one explicit welcoming adoption can confirm it. Objections revoke the
+name until explicit readoption. Duplicate sources, scripted RP, forged IDs, ambiguous
+cross-talk and replies to somebody else cannot manufacture support. Colliding aliases
+for multiple members stay ambiguous. The character's own posts cannot reinforce its
+mistakes.
+
+Only confirmed associations enter replies, as untrusted nickname data rather than
+real identity or biography. Public-channel associations apply within that server;
+private-channel associations stay in that channel. Edited/deleted sources remove
+support, and revoked channel access invalidates in-flight learning. Evidence is bounded
+to 5,000 exchanges per persona and expires after 90 days. Inspect associations and
+their status in the `nicknames` field of `GET /api/memory/USER_ID?persona=PERSONA`.
+Forgetting a person, copying their persona's memory and deleting a persona include
+nickname evidence. No messages are posted merely to discover a name.
 
 The account needs permission to view a channel and send messages there, including
 thread-specific permissions. If history access is unavailable, it uses messages

@@ -107,6 +107,7 @@ bot:
       reply_cooldown_seconds: 20
       max_reply_age_seconds: 120
       learn_from_chat: true
+      learn_nicknames: true  # associate names with members through evidenced calls and responses
       learning_min_messages: 4
       learning_interval_seconds: 120
 
