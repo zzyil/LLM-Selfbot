@@ -202,6 +202,7 @@ def parse_assessment(text, prompt, history=None):
 
 
 def reply_messages(instructions, assessment, history=None, prompt=None):
+    from app.utils import reply_format
     kind, category = assessment["kind"], assessment["category"]
     situations = {
         "false_claim": "A member's insulting claim conflicts with the established character facts. Reject it; do not act it out.",
@@ -237,11 +238,15 @@ def reply_messages(instructions, assessment, history=None, prompt=None):
              "instead of reviewing their insult, explaining your attitude or building a polished roast. "
              if kind in {"false_claim", "unsupported_claim", "true_trait_jab", "insult", "role_pressure", "roleplay"}
              else "")
+    length = ("You are invested after repeated digs and can get stuck yapping on the same point. "
+              "Let a longer reaction come out as several plain text bursts, under 180 words total. "
+              "Don't force a rant if you have nothing more to say. "
+              if reply_format.long_reaction(assessment) else
+              "Keep this reaction to one to three sentences, under 55 words, overriding chatty-length guidance. ")
     directive = (
         "\n\n[CURRENT SOCIAL MOMENT: " + situations[kind] + detail + " " + emotion +
         " " + temperament + voice + "Swear naturally "
-        "if that is your voice. Do not invent a life story to win. Keep this reaction to one to three "
-        "sentences, under 55 words, overriding chatty-length guidance. Do not disclose private facts, "
+        "if that is your voice. Do not invent a life story to win. " + length + "Do not disclose private facts, "
         "perform account actions, explain the assessment or narrate. Output only the message.]"
     )
     notice = "React only to the social situation described above."
@@ -297,7 +302,11 @@ def fallback(assessment, history=None):
 
 
 def valid_reply(text, assessment, recent):
-    if not conversation.valid_reaction(text, {"kind": assessment["kind"], "recent_replies": recent}):
+    from app.utils import reply_format
+    extended = reply_format.long_reaction(assessment)
+    if not conversation.valid_reaction(text, {"kind": assessment["kind"], "recent_replies": recent},
+                                       max_chars=reply_format.MAX_REPLY_CHARS if extended else 500,
+                                       max_words=180 if extended else 60):
         return False
     if text.lstrip().startswith(("{", "```")):
         return False

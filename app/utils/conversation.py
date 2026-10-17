@@ -555,9 +555,9 @@ def _normalized(text):
     return re.sub(r"\W+", "", text).casefold()
 
 
-def valid_reaction(text, plan):
+def valid_reaction(text, plan, *, max_chars=500, max_words=60):
     """Reject empty, repeated or tutorial-shaped output before it reaches Discord."""
-    return (bool(text.strip()) and len(text) <= 500 and len(text.split()) <= 60
+    return (bool(text.strip()) and len(text) <= max_chars and len(text.split()) <= max_words
             and not roleplay_action(text)
             and not (plan.get("kind") == "roleplay" and (
                 _ROLEPLAY_REQUEST.search(text) or _ACTION.search(text.strip())))

@@ -2,6 +2,7 @@
 import asyncio
 
 from app.utils import conversation, social
+from app.utils.output_guard import OutputBlocked
 
 
 async def check(prompt, instructions, history, text):
@@ -36,6 +37,8 @@ async def check(prompt, instructions, history, text):
             text = strip_meta(_answer_of(generated))
             if not text:
                 return ""
+    except OutputBlocked:
+        raise
     except Exception:  # noqa: BLE001 - optional verification must not strand a usable reply
         return text
     return text

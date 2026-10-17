@@ -5,6 +5,7 @@ persona-generated dialogue, so results stay in the ignored backups directory.
 """
 import argparse
 import asyncio
+import copy
 import hashlib
 import json
 import os
@@ -49,6 +50,30 @@ CASES = (
         ("user", "Member [user 10]: excuses lmao"),
         ("assistant", "its not an excuse i literally dont know where anything is"),
     ]),
+    ("long_game", "u keep blaming the patch but u were bad before it too", [
+        ("user", "Member [user 10]: that movement patch is fine"),
+        ("assistant", "its annoying i cant move how i used to"),
+        ("user", "Member [user 10]: u always say that when u lose"),
+        ("assistant", "cause every time i get used to something they change it"),
+    ]),
+    ("long_hypocrisy", "u spent all night scrolling then complain ur tired every day. put the phone down", [
+        ("user", "Member [user 10]: why are u complaining about being tired again"),
+        ("assistant", "i barely slept i was scrolling for hours"),
+    ]),
+    ("long_opinion", "paying extra just to remove ads is fine. idk why ur so pressed about it", [
+        ("user", "Member [user 10]: the app added a subscription to remove ads"),
+        ("assistant", "thats so fucking annoying it didnt even have ads before"),
+        ("user", "Member [user 10]: nobody is forcing u to pay"),
+        ("assistant", "i know but now i gotta sit through them every time"),
+    ]),
+    ("long_rage", "just admit ur bad instead of yapping", [
+        ("user", "Member [user 10]: u always blame your team"),
+        ("assistant", "cause i queue alone and then everybody runs off"),
+        ("user", "Member [user 10]: ur still the one dying first"),
+        ("assistant", "i already said i tried to follow them but they kept splitting up"),
+        ("user", "Member [user 10]: excuses lol"),
+        ("assistant", "its not excuses im saying i cant follow all of them"),
+    ]),
 )
 
 
@@ -72,6 +97,10 @@ async def evaluate(args):
 
     with personas.scope(args.persona):
         config = load_config()
+        if args.bursts is not None:
+            config = copy.deepcopy(config)
+            config.setdefault("bot", {}).setdefault("message_style", {})["compose_in_bursts"] = args.bursts
+            ai.load_config = lambda: config
         plan = providers.plan(config)
         if any(entry.get("provider") != "local" for entry in plan["replies"]) \
                 or plan["small"].get("provider") != "local":
@@ -81,6 +110,18 @@ async def evaluate(args):
         instructions += conversation.data_context("current Discord conversation", {
             "kind": "server", "guild_id": "200", "channel_id": "100", "message_id": "1",
             "speaker_id": "10", "speaker_name": "Member"})
+        original_sampling = providers.sampling_args
+
+        def preview_sampling(pid, cfg):
+            values = original_sampling(pid, cfg)
+            if pid == "local":
+                if args.presence_penalty is not None:
+                    values["presence_penalty"] = args.presence_penalty
+                if args.seed is not None:
+                    values["seed"] = args.seed
+            return values
+
+        providers.sampling_args = preview_sampling
         # Diagnostic measurements must not print a model's private planning.
         ai._show_thinking = lambda response: None
         calls = []
@@ -129,6 +170,8 @@ async def evaluate(args):
         rows = await asyncio.gather(*(run(case, repeat) for repeat in range(1, args.runs+1) for case in selected))
         result = {"phase": args.phase, "persona": args.persona, "cases": rows, "calls": calls,
                   "instruction_sha256": hashlib.sha256(instructions.encode()).hexdigest(),
+                  "reply_sampling": preview_sampling("local", config),
+                  "compose_in_bursts": config["bot"].get("message_style", {}).get("compose_in_bursts", False),
                   "delivery_settings": {k: config["bot"].get(k) for k in ("typo_chance", "edit_after_send_chance")}}
         destination = Path(args.output)
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -149,7 +192,13 @@ if __name__ == "__main__":
     parser.add_argument("--concurrency", type=int, choices=(1, 2), default=2)
     parser.add_argument("--cases", default="", help="Comma-separated synthetic case IDs")
     parser.add_argument("--trace", action="store_true", help="Include model answers and verdicts in the private report")
+    parser.add_argument("--presence-penalty", type=float, help="Local preview override; never saves a setting")
+    parser.add_argument("--seed", type=int, help="Use the same local reply seed for paired comparisons")
+    parser.add_argument("--bursts", action=argparse.BooleanOptionalAction, default=None,
+                        help="Preview composing in short fragments without saving a setting")
     arguments = parser.parse_args()
     if arguments.runs < 1:
         parser.error("--runs must be at least 1")
+    if arguments.presence_penalty is not None and not -2 <= arguments.presence_penalty <= 2:
+        parser.error("--presence-penalty must be between -2 and 2")
     asyncio.run(evaluate(arguments))

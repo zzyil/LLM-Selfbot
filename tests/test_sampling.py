@@ -39,10 +39,15 @@ print("\n== each provider gets only what it takes ==")
 check("one that takes all four", P.sampling_args("openai", FULL) == {
     "temperature": 0.9, "top_p": 0.95, "frequency_penalty": 0.6, "presence_penalty": 0.3})
 check("Groq takes them too", len(P.sampling_args("groq", FULL)) == 4)
-for pid in ("anthropic", "gemini", "local"):
+for pid in ("anthropic", "gemini"):
     got = P.sampling_args(pid, FULL)
     check(f"{pid} is sent no penalties, which it has none of",
           set(got) == {"temperature", "top_p"}, str(got))
+check("local servers receive the configured penalties", P.sampling_args("local", FULL) == FULL["bot"]["sampling"])
+check("zero explicitly disables a local penalty instead of inheriting the server default",
+      P.sampling_args("local", {"bot": {"sampling": {
+          "frequency_penalty": 0, "presence_penalty": 0}}}) == {
+              "frequency_penalty": 0.0, "presence_penalty": 0.0})
 check("a provider nobody listed gets the full set, since they all speak the same API",
       set(P.sampling_args("together", FULL)) == set(P.SAMPLING))
 

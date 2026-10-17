@@ -24,6 +24,7 @@ DESCRIPTIONS = {
     "bot.anti_age_ban": "Avoid wording that Discord flags for age related bans.",
     "bot.read_bios": "Read a profile bio for extra context about someone.",
     "bot.ignore_chance": "Chance of skipping a message entirely, so replies are not guaranteed.",
+    "bot.message_style.compose_in_bursts": "Compose longer local text replies as short, loose thoughts. Requires local-only inference and a server with structured output support, such as LM Studio. Existing limits on the number of messages still apply.",
     "bot.typo_chance": "Chance of a small typo in a reply.",
     "bot.groq_models": "Models to try in order. If one fails it moves to the next.",
     "bot.groq_small_model": "Fast model for memory and language utility calls.",

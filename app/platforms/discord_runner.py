@@ -4413,7 +4413,8 @@ async def generate_response_and_reply(message, prompt, history, image_url=None, 
     if len(_style_pieces) > _style_max_chunks:
         _overflow = _style_pieces[_style_max_chunks - 1:]
         _style_pieces = _style_pieces[:_style_max_chunks - 1]
-        _style_pieces.append(" ".join(_overflow)[:1900])
+        _separator = "\n" if _style_cfg.get("compose_in_bursts", False) else " "
+        _style_pieces.append(_separator.join(_overflow)[:1900])
     chunks = [response[:1900]] if not update_memory and response.strip() else _style_pieces
 
     # Transform ALL chunks, then check the combined final output before the first send.

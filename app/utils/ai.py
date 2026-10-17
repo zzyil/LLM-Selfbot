@@ -485,7 +485,11 @@ async def _create_completion(messages, max_tokens=None):
     token = usage.JOB.set("replies")
     _inflight_replies += 1
     try:
-        return await _create_completion_inner(messages, max_tokens)
+        response = await _create_completion_inner(messages, max_tokens)
+        from app.utils import reply_format
+        if reply_format.active():
+            response.choices[0].message.content = reply_format.decode(_answer_of(response))
+        return response
     finally:
         _inflight_replies -= 1
         usage.JOB.reset(token)
@@ -542,13 +546,15 @@ async def _create_completion_inner(messages, max_tokens=None):
         prev = entry
         prev_error = None
         sampling = {} if pid in _no_sampling else providers.sampling_args(pid, config)
+        from app.utils import reply_format
+        format_options = reply_format.request_options() if pid == "local" else {}
         try:
             try:
                 if pid == "groq":
                     response = await _groq_chat(mid, messages, cap, sampling)
                 else:
                     response = await client.chat.completions.create(
-                        model=mid, messages=messages, max_tokens=cap, **sampling)
+                        model=mid, messages=messages, max_tokens=cap, **sampling, **format_options)
             except Exception as e:
                 # A provider that does not take one of these answers 400 for the
                 # whole request. Rather than lose the reply over a setting, send
@@ -561,7 +567,7 @@ async def _create_completion_inner(messages, max_tokens=None):
                     response = await _groq_chat(mid, messages, cap, {})
                 else:
                     response = await client.chat.completions.create(
-                        model=mid, messages=messages, max_tokens=cap)
+                        model=mid, messages=messages, max_tokens=cap, **format_options)
             model = mid
             last_reply_model = providers.label(entry)
             _resting.pop((pid, mid), None)
@@ -887,6 +893,8 @@ async def _character_reaction(prompt, instructions, history=None):
         text = strip_meta(re.sub(r"</?blockquote\b[^>]*>", "", _answer_of(response)).strip())
         if conversation.valid_reaction(text, plan):
             return text
+    except output_guard.OutputBlocked:
+        raise
     except (Exception, SystemExit):  # noqa: BLE001 - keep the character reaction when inference is unavailable
         return conversation.bait_reply(prompt, history=history)
     return conversation.bait_reply(prompt, history=history)
@@ -933,6 +941,8 @@ async def _social_reaction(prompt, instructions, history=None):
                   if turn.get("role") == "assistant"][-3:]
         if social.valid_reply(text, assessment, recent):
             return text
+    except output_guard.OutputBlocked:
+        raise
     except (Exception, SystemExit):  # noqa: BLE001 - preserve a short reaction when generation fails
         pass
     return social.fallback(assessment, history)
@@ -940,10 +950,14 @@ async def _social_reaction(prompt, instructions, history=None):
 
 async def generate_response(prompt, instructions, history=None, *, internal=False):
     """Visible generations pass the confidentiality gate; internal analyses never go to chat."""
+    from app.utils import reply_format
     if internal:
-        return await _generate_response(prompt, instructions, history)
-    protected = instructions + output_guard.POLICY
-    text = await _generate_response(prompt, protected, history)
+        with reply_format.scope(False):
+            return await _generate_response(prompt, instructions, history)
+    bursts = reply_format.enabled(load_config())
+    protected = instructions + (reply_format.INSTRUCTIONS if bursts else "") + output_guard.POLICY
+    with reply_format.scope(bursts):
+        text = await _generate_response(prompt, protected, history)
     return await output_guard.check(text, protected, prompt, history=history)
 
 
@@ -1002,6 +1016,8 @@ async def _generate_response(prompt, instructions, history=None):
         _show_thinking(response)
         from app.utils.humanize import strip_meta
         return await check_grounding(prompt, instructions, history, strip_meta(_answer_of(response)))
+    except output_guard.OutputBlocked:
+        raise
     except Exception as e:
         # Rate-limit errors are handled and logged by the retry loop in main.py,
         # and a request too big for the model is explained there, in words.

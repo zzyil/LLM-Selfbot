@@ -321,6 +321,9 @@ bot:
   # talkative, longer replies, still split into 2-4 messages.
   message_style:
     mode: balanced           # short | balanced | chatty
+    # Local-only text replies; requires a server supporting JSON schema (LM Studio).
+    # Fragments stay within the existing reply/message count limits.
+    compose_in_bursts: false
     # max_chunk_chars: 400   # optional override per mode (180/400/800 default)
 
   # --- Emoji reactions ---

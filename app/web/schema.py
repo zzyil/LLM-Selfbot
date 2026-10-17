@@ -67,6 +67,8 @@ CONFIG_SCHEMA = [
      "section": "Humanization", "min": 0.0, "max": 1.0, "step": 0.005},
     {"key": "bot.message_style.mode", "type": "str", "label": "Message style",
      "section": "Humanization"},
+    {"key": "bot.message_style.compose_in_bursts", "type": "bool",
+     "label": "Compose replies in short bursts", "section": "Humanization", "default": False},
     {"key": "bot.reactions.enabled", "type": "bool", "label": "Context-aware emoji reactions",
      "section": "Humanization"},
     {"key": "bot.reactions.react_only_max_ratio", "type": "float", "label": "Max ratio of reaction-only replies",

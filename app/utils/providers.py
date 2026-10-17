@@ -355,12 +355,12 @@ SAMPLING = ("temperature", "top_p", "frequency_penalty", "presence_penalty")
 # Which of them a provider will accept. Everything here speaks the OpenAI chat
 # API, but not all of them take the whole of it, and one unknown field is a 400
 # for the whole request rather than a warning. Anthropic and Gemini have no
-# penalties at all; a local server takes whatever it was built with, so it gets
-# the two that every implementation has.
+# penalties at all. OpenAI-compatible local servers such as LM Studio accept
+# the penalties too. A server that rejects a configured sampling field uses
+# the same retry without sampling arguments as other compatible providers.
 _SAMPLING_SUPPORT = {
     "anthropic": ("temperature", "top_p"),
     "gemini": ("temperature", "top_p"),
-    "local": ("temperature", "top_p"),
 }
 
 
